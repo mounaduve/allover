@@ -17,19 +17,22 @@ Liste sehen und bearbeiten.
 - Punkte abhaken (Tippen auf den Kreis), Fortschrittsbalken oben
 - Neue Punkte unten hinzufügen (mit Kategorie)
 - Punkte löschen (× rechts)
-- Gruppierung nach Kategorie: Dokumente, Kleidung, Kulturbeutel, Technik, Strand, Sonstiges
+- Gruppierung nach Kategorie: Dokumente, Kleidung, Schuhe, Kinder, Kulturbeutel, Medikamente, Supplements, Technik, Strand & Wasser, Spiele, Vor der Abreise, Sonstiges
 - Aktualisiert sich alle ~8 Sekunden automatisch, damit beide dieselben Häkchen sehen
+- Eintrag umbenennen: auf den Text tippen (dort auch Rubrik wechseln)
+- Verschieben zwischen Rubriken: am ⠿ ziehen oder im Bearbeiten-Menü die Rubrik ändern
 
 ## Technik
 
 - **Frontend:** `chunks/packliste.html` – eine Single-Page-App (Alpine.js + Tailwind via CDN)
 - **Backend:** n8n-Workflow „Urlaubspackliste (geteilte Liste)" (im persönlichen
-  n8n-Projekt), 5 Webhook-Routen:
+  n8n-Projekt), 6 Webhook-Routen:
   - `GET  /webhook/packliste` – liefert die Seite (mit vorab geladenen Daten)
   - `GET  /webhook/packliste/items` – Liste als JSON
   - `POST /webhook/packliste/toggle` – Häkchen speichern (`{id, completed}`)
   - `POST /webhook/packliste/add` – Punkt hinzufügen (`{title, category}`)
   - `POST /webhook/packliste/delete` – Punkt löschen (`{id}`)
+  - `POST /webhook/packliste/update` – Titel/Kategorie ändern (`{id, title, category}`)
 - **Daten:** n8n-Datentabelle `packliste` (Spalten: `title`, `category`, `completed`)
 - `workflow.ts` ist der generierte Workflow-Code; `workflow.template.ts` die
   Vorlage mit Platzhalter für die (base64-eingebettete) HTML-Seite.

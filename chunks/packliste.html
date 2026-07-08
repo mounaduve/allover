@@ -6,9 +6,13 @@
   <title>Urlaubspackliste</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
     body { -webkit-tap-highlight-color: transparent; }
+    .sortable-ghost { opacity: .4; }
+    .sortable-chosen { background: #f1f5f9; }
+    .drag-handle { touch-action: none; cursor: grab; }
   </style>
 </head>
 <body class="bg-slate-100 min-h-screen text-slate-800">
@@ -16,7 +20,7 @@
 
     <div class="max-w-xl mx-auto px-4 py-6 pb-32">
       <!-- Kopf -->
-      <header class="mb-5">
+      <header class="mb-4">
         <div class="flex items-center justify-between">
           <h1 class="text-2xl font-bold text-slate-900">🧳 Urlaubspackliste</h1>
           <button @click="load()" :class="loading && 'animate-spin'" class="text-slate-400 text-xl" title="Aktualisieren">⟳</button>
@@ -25,24 +29,46 @@
         <div class="mt-3 h-2 w-full rounded-full bg-slate-200 overflow-hidden">
           <div class="h-full bg-emerald-500 transition-all duration-300" :style="`width: ${progress()}%`"></div>
         </div>
+        <p class="text-[11px] text-slate-400 mt-2">Tipp: auf den Text tippen zum Umbenennen · am ⠿ ziehen, um in eine andere Rubrik zu schieben.</p>
       </header>
 
       <!-- Liste nach Kategorie -->
       <template x-for="cat in categories()" :key="cat">
         <section class="mb-5">
           <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2 px-1" x-text="cat"></h2>
-          <div class="bg-white rounded-2xl shadow-sm divide-y divide-slate-100 overflow-hidden">
+          <div class="cat-list bg-white rounded-2xl shadow-sm divide-y divide-slate-100 overflow-hidden"
+               :data-category="cat" x-init="initSortable($el)">
             <template x-for="item in itemsIn(cat)" :key="item.id">
-              <div class="flex items-center gap-3 px-4 py-3 active:bg-slate-50">
-                <button @click="toggle(item)"
+              <div class="flex items-center gap-2 px-3 py-3 active:bg-slate-50" :data-id="item.id">
+                <span x-show="editingId !== item.id" class="drag-handle shrink-0 text-slate-300 text-lg select-none px-1">⠿</span>
+                <button x-show="editingId !== item.id" @click="toggle(item)"
                   :class="item.completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'"
                   class="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors">
                   <span x-show="item.completed" class="text-white text-sm">✓</span>
                 </button>
-                <span class="flex-1 text-[15px]"
+
+                <!-- Anzeige -->
+                <span x-show="editingId !== item.id"
+                  @click="startEdit(item)"
+                  class="flex-1 text-[15px] cursor-text"
                   :class="item.completed && 'line-through text-slate-400'"
                   x-text="item.title"></span>
-                <button @click="remove(item)" class="shrink-0 text-slate-300 hover:text-rose-500 text-lg px-1">×</button>
+                <button x-show="editingId !== item.id" @click="remove(item)" class="shrink-0 text-slate-300 hover:text-rose-500 text-lg px-1">×</button>
+
+                <!-- Bearbeiten: Text umschreiben + Kategorie wechseln -->
+                <div x-show="editingId === item.id" class="flex-1 flex flex-col gap-1" @click.stop>
+                  <input x-model="editText"
+                    @keydown.enter="saveEdit(item)" @keydown.escape="cancelEdit()"
+                    x-ref="edit"
+                    class="w-full text-[15px] border border-emerald-400 rounded px-2 py-1 focus:outline-none">
+                  <div class="flex items-center gap-2">
+                    <select x-model="item.category" @change="persist(item)"
+                      class="flex-1 text-sm border border-slate-300 rounded px-2 py-1 bg-white text-slate-600">
+                      <template x-for="c in _categories" :key="c"><option :value="c" x-text="c"></option></template>
+                    </select>
+                    <button @click="saveEdit(item)" class="shrink-0 rounded bg-emerald-600 text-white text-sm px-3 py-1">Fertig</button>
+                  </div>
+                </div>
               </div>
             </template>
           </div>
@@ -54,7 +80,7 @@
       </p>
     </div>
 
-    <!-- Eingabeleiste unten (gleiche Komponente!) -->
+    <!-- Eingabeleiste unten -->
     <form @submit.prevent="submitAdd()"
       class="fixed bottom-0 inset-x-0 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3">
       <div class="max-w-xl mx-auto flex gap-2">
@@ -77,6 +103,9 @@
       return {
         items: [],
         loading: false,
+        dragging: false,
+        editingId: null,
+        editText: '',
         newTitle: '',
         newCat: 'Sonstiges',
         _categories: CATS,
@@ -103,7 +132,38 @@
           const done = this.items.filter(i => i.completed).length;
           return `${done} von ${this.items.length} eingepackt`;
         },
+
+        // Drag & Drop – Verschieben zwischen Rubriken
+        initSortable(el) {
+          if (!window.Sortable || el._sortableReady) return;
+          el._sortableReady = true;
+          const self = this;
+          Sortable.create(el, {
+            group: 'packliste',
+            handle: '.drag-handle',
+            forceFallback: true,
+            fallbackTolerance: 5,
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            onStart() { self.dragging = true; },
+            onEnd(evt) {
+              self.dragging = false;
+              const id = evt.item.getAttribute('data-id');
+              const toCat = evt.to && evt.to.getAttribute('data-category');
+              const fromCat = evt.from && evt.from.getAttribute('data-category');
+              if (toCat && fromCat && toCat !== fromCat) {
+                // Alpine bleibt die Quelle der Wahrheit: von Sortable eingefügten Knoten entfernen
+                evt.item.remove();
+                const it = self.items.find(x => String(x.id) === String(id));
+                if (it) { it.category = toCat; self.persist(it); }
+              }
+            }
+          });
+        },
+
         async load() {
+          if (this.editingId !== null || this.dragging) return; // nicht mitten im Bearbeiten/Ziehen neu laden
           this.loading = true;
           try {
             const res = await fetch('/webhook/packliste/items', { cache: 'no-store' });
@@ -119,6 +179,35 @@
             });
           } catch (e) { item.completed = !item.completed; }
         },
+
+        // Bearbeiten des Textes
+        startEdit(item) {
+          if (typeof item.id === 'string' && item.id.startsWith('tmp-')) return; // erst nach dem Speichern
+          this.editingId = item.id;
+          this.editText = item.title;
+          this.$nextTick(() => { if (this.$refs.edit) { this.$refs.edit.focus(); this.$refs.edit.select(); } });
+        },
+        cancelEdit() { this.editingId = null; this.editText = ''; },
+        async saveEdit(item) {
+          if (this.editingId !== item.id) return;
+          const t = (this.editText || '').trim();
+          this.editingId = null;
+          if (t && t !== item.title) {
+            item.title = t;
+            this.persist(item);
+          }
+        },
+
+        // Änderung (Titel und/oder Kategorie) speichern
+        async persist(item) {
+          try {
+            await fetch('/webhook/packliste/update', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: item.id, title: item.title, category: item.category })
+            });
+          } catch (e) {}
+        },
+
         async submitAdd() {
           const title = (this.newTitle || '').trim();
           if (!title) return;

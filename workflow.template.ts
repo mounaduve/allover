@@ -210,9 +210,47 @@ const respondDelete = node({
   output: [{}]
 });
 
+const updateWebhook = trigger({
+  type: 'n8n-nodes-base.webhook',
+  version: 2.1,
+  config: { name: 'POST Update', parameters: { httpMethod: 'POST', path: 'packliste/update', responseMode: 'responseNode', options: {} } },
+  output: [{ body: { id: 1, title: 'Neuer Titel', category: 'Sonstiges' } }]
+});
+const updateEntry = node({
+  type: 'n8n-nodes-base.dataTable',
+  version: 1.1,
+  config: {
+    name: 'Eintrag aktualisieren',
+    parameters: {
+      resource: 'row',
+      operation: 'update',
+      dataTableId: { __rl: true, mode: 'name', value: TABLE },
+      matchType: 'allConditions',
+      filters: { conditions: [{ keyName: 'id', condition: 'eq', keyValue: expr('{{ $json.body.id }}') }] },
+      columns: {
+        mappingMode: 'defineBelow',
+        value: { title: expr('{{ $json.body.title }}'), category: expr('{{ $json.body.category }}') },
+        schema: [
+          { id: 'title', displayName: 'title', required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: false },
+          { id: 'category', displayName: 'category', required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: false }
+        ]
+      },
+      options: {}
+    }
+  },
+  output: [{ id: 1, title: 'Neuer Titel', category: 'Sonstiges' }]
+});
+const respondUpdate = node({
+  type: 'n8n-nodes-base.respondToWebhook',
+  version: 1.5,
+  config: { name: 'Update Antwort', parameters: { respondWith: 'allIncomingItems', options: {} } },
+  output: [{}]
+});
+
 export default workflow('packliste-app', 'Urlaubspackliste (geteilte Liste)')
   .add(pageWebhook).to(getRowsForPage).to(aggregateRows).to(buildPage).to(respondPage)
   .add(itemsWebhook).to(getRowsJson).to(respondItems)
   .add(toggleWebhook).to(updateRow).to(respondToggle)
   .add(addWebhook).to(insertRow).to(respondAdd)
-  .add(deleteWebhook).to(deleteRow).to(respondDelete);
+  .add(deleteWebhook).to(deleteRow).to(respondDelete)
+  .add(updateWebhook).to(updateEntry).to(respondUpdate);
