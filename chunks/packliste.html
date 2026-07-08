@@ -37,6 +37,7 @@
               <span class="text-xs font-semibold uppercase tracking-wide text-slate-500" x-text="cat"></span>
               <span class="text-[11px] text-slate-400" x-text="doneCount(cat) + '/' + itemsIn(cat).length"></span>
             </span>
+            <button @click="renameCat(cat)" class="text-slate-400 hover:text-slate-600 text-sm px-1 leading-none" title="Rubrik umbenennen">✎</button>
             <button @click="moveCat(cat, -1)" class="text-slate-400 hover:text-slate-600 text-sm px-1 leading-none" title="nach oben">▲</button>
             <button @click="moveCat(cat, 1)" class="text-slate-400 hover:text-slate-600 text-sm px-1 leading-none" title="nach unten">▼</button>
           </h2>
@@ -64,9 +65,10 @@
                     x-ref="edit"
                     class="w-full text-[15px] border border-emerald-400 rounded px-2 py-1 focus:outline-none">
                   <div class="flex items-center gap-2">
+                    <span class="text-xs text-slate-400 shrink-0">Rubrik:</span>
                     <select x-model="item.category" @change="persist(item)"
                       class="flex-1 text-sm border border-slate-300 rounded px-2 py-1 bg-white text-slate-600">
-                      <template x-for="c in _categories" :key="c"><option :value="c" x-text="c"></option></template>
+                      <template x-for="c in allCategories()" :key="c"><option :value="c" x-text="c"></option></template>
                     </select>
                     <button @click="saveEdit(item)" class="shrink-0 rounded bg-emerald-600 text-white text-sm px-3 py-1">Fertig</button>
                   </div>
@@ -87,7 +89,7 @@
       class="fixed bottom-0 inset-x-0 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3">
       <div class="max-w-xl mx-auto flex gap-2">
         <select x-model="newCat" class="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-600">
-          <template x-for="c in _categories" :key="c"><option x-text="c" :value="c"></option></template>
+          <template x-for="c in allCategories()" :key="c"><option x-text="c" :value="c"></option></template>
         </select>
         <input x-model="newTitle" type="text" placeholder="Was noch einpacken?" enterkeyhint="done"
           class="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-emerald-400">
@@ -138,6 +140,29 @@
         },
         doneCount(cat) {
           return this.itemsIn(cat).filter(i => i.completed).length;
+        },
+        // alle wählbaren Rubriken (Standard + vorhandene + umbenannte)
+        allCategories() {
+          const out = [];
+          this.catOrder.forEach(c => { if (!out.includes(c)) out.push(c); });
+          this.items.forEach(i => { const c = i.category || 'Sonstiges'; if (!out.includes(c)) out.push(c); });
+          return out;
+        },
+        // Rubrik umbenennen (alle Einträge der Rubrik wandern mit)
+        renameCat(cat) {
+          const name = (window.prompt('Rubrik umbenennen:', cat) || '').trim();
+          if (!name || name === cat) return;
+          this.items.forEach(it => {
+            if ((it.category || 'Sonstiges') === cat) { it.category = name; this.persist(it); }
+          });
+          this.catOrder = this.catOrder.map(c => c === cat ? name : c);
+          if (!this.catOrder.includes(name)) this.catOrder.push(name);
+          if (cat in this.collapsed) { this.collapsed[name] = this.collapsed[cat]; delete this.collapsed[cat]; }
+          if (this.newCat === cat) this.newCat = name;
+          try {
+            localStorage.setItem('pl_catOrder', JSON.stringify(this.catOrder));
+            localStorage.setItem('pl_collapsed', JSON.stringify(this.collapsed));
+          } catch (e) {}
         },
         progress() {
           if (!this.items.length) return 0;
