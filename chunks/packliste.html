@@ -66,9 +66,10 @@
                     class="w-full text-[15px] border border-emerald-400 rounded px-2 py-1 focus:outline-none">
                   <div class="flex items-center gap-2">
                     <span class="text-xs text-slate-400 shrink-0">Rubrik:</span>
-                    <select x-model="item.category" @change="persist(item)"
+                    <select x-model="item.category" @change="onItemCatChange(item)"
                       class="flex-1 text-sm border border-slate-300 rounded px-2 py-1 bg-white text-slate-600">
                       <template x-for="c in allCategories()" :key="c"><option :value="c" x-text="c"></option></template>
+                      <option value="__new__">➕ Neue Rubrik…</option>
                     </select>
                     <button @click="saveEdit(item)" class="shrink-0 rounded bg-emerald-600 text-white text-sm px-3 py-1">Fertig</button>
                   </div>
@@ -88,8 +89,9 @@
     <form @submit.prevent="submitAdd()"
       class="fixed bottom-0 inset-x-0 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3">
       <div class="max-w-xl mx-auto flex gap-2">
-        <select x-model="newCat" class="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-600">
+        <select x-model="newCat" @change="onNewCatChange()" class="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-600">
           <template x-for="c in allCategories()" :key="c"><option x-text="c" :value="c"></option></template>
+          <option value="__new__">➕ Neue Rubrik…</option>
         </select>
         <input x-model="newTitle" type="text" placeholder="Was noch einpacken?" enterkeyhint="done"
           class="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-emerald-400">
@@ -109,6 +111,7 @@
         loading: false,
         editingId: null,
         editText: '',
+        editCatBefore: '',
         newTitle: '',
         newCat: 'Sonstiges',
         _categories: CATS,
@@ -147,6 +150,30 @@
           this.catOrder.forEach(c => { if (!out.includes(c)) out.push(c); });
           this.items.forEach(i => { const c = i.category || 'Sonstiges'; if (!out.includes(c)) out.push(c); });
           return out;
+        },
+        // Neue Rubrik anlegen (fragt nach dem Namen, merkt sie sich lokal)
+        newCategory() {
+          const name = (window.prompt('Neue Rubrik anlegen:') || '').trim();
+          if (!name || name === '__new__') return null;
+          if (!this.catOrder.includes(name)) {
+            this.catOrder.push(name);
+            try { localStorage.setItem('pl_catOrder', JSON.stringify(this.catOrder)); } catch (e) {}
+          }
+          return name;
+        },
+        // Auswahl "➕ Neue Rubrik…" in der Eingabeleiste
+        onNewCatChange() {
+          if (this.newCat === '__new__') {
+            this.newCat = this.newCategory() || 'Sonstiges';
+          }
+        },
+        // Auswahl "➕ Neue Rubrik…" im Bearbeiten-Feld eines Eintrags
+        onItemCatChange(item) {
+          if (item.category === '__new__') {
+            item.category = this.newCategory() || this.editCatBefore || 'Sonstiges';
+          }
+          this.editCatBefore = item.category;
+          this.persist(item);
         },
         // Rubrik umbenennen (alle Einträge der Rubrik wandern mit)
         renameCat(cat) {
@@ -214,6 +241,7 @@
           if (typeof item.id === 'string' && item.id.startsWith('tmp-')) return; // erst nach dem Speichern
           this.editingId = item.id;
           this.editText = item.title;
+          this.editCatBefore = item.category || 'Sonstiges';
           this.$nextTick(() => { if (this.$refs.edit) { this.$refs.edit.focus(); this.$refs.edit.select(); } });
         },
         cancelEdit() { this.editingId = null; this.editText = ''; },
