@@ -6,13 +6,9 @@
   <title>Urlaubspackliste</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
     body { -webkit-tap-highlight-color: transparent; }
-    .sortable-ghost { opacity: .4; }
-    .sortable-chosen { background: #f1f5f9; }
-    .drag-handle { touch-action: none; cursor: grab; }
   </style>
 </head>
 <body class="bg-slate-100 min-h-screen text-slate-800">
@@ -29,18 +25,24 @@
         <div class="mt-3 h-2 w-full rounded-full bg-slate-200 overflow-hidden">
           <div class="h-full bg-emerald-500 transition-all duration-300" :style="`width: ${progress()}%`"></div>
         </div>
-        <p class="text-[11px] text-slate-400 mt-2">Tipp: auf den Text tippen zum Umbenennen · am ⠿ ziehen, um in eine andere Rubrik zu schieben.</p>
+        <p class="text-[11px] text-slate-400 mt-2">Tipp: auf die Überschrift tippen = ein-/ausklappen · mit ▲▼ die Rubrik verschieben · auf den Text tippen = umbenennen &amp; Rubrik wechseln.</p>
       </header>
 
       <!-- Liste nach Kategorie -->
       <template x-for="cat in categories()" :key="cat">
-        <section class="mb-5">
-          <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2 px-1" x-text="cat"></h2>
-          <div class="cat-list bg-white rounded-2xl shadow-sm divide-y divide-slate-100 overflow-hidden"
-               :data-category="cat" x-init="initSortable($el)">
+        <section class="mb-4">
+          <h2 class="flex items-center gap-2 mb-2 px-1">
+            <span @click="toggleCollapse(cat)" class="flex-1 flex items-center gap-2 cursor-pointer select-none">
+              <span class="w-3 text-slate-400 text-xs" x-text="collapsed[cat] ? '▸' : '▾'"></span>
+              <span class="text-xs font-semibold uppercase tracking-wide text-slate-500" x-text="cat"></span>
+              <span class="text-[11px] text-slate-400" x-text="doneCount(cat) + '/' + itemsIn(cat).length"></span>
+            </span>
+            <button @click="moveCat(cat, -1)" class="text-slate-400 hover:text-slate-600 text-sm px-1 leading-none" title="nach oben">▲</button>
+            <button @click="moveCat(cat, 1)" class="text-slate-400 hover:text-slate-600 text-sm px-1 leading-none" title="nach unten">▼</button>
+          </h2>
+          <div x-show="!collapsed[cat]" class="bg-white rounded-2xl shadow-sm divide-y divide-slate-100 overflow-hidden">
             <template x-for="item in itemsIn(cat)" :key="item.id">
-              <div class="flex items-center gap-2 px-3 py-3 active:bg-slate-50" :data-id="item.id">
-                <span x-show="editingId !== item.id" class="drag-handle shrink-0 text-slate-300 text-lg select-none px-1">⠿</span>
+              <div class="flex items-center gap-2 px-3 py-3 active:bg-slate-50">
                 <button x-show="editingId !== item.id" @click="toggle(item)"
                   :class="item.completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'"
                   class="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors">
@@ -103,26 +105,39 @@
       return {
         items: [],
         loading: false,
-        dragging: false,
         editingId: null,
         editText: '',
         newTitle: '',
         newCat: 'Sonstiges',
         _categories: CATS,
+        collapsed: {},
+        catOrder: CATS.slice(),
 
         init() {
           try {
             this.items = JSON.parse(atob(document.getElementById('__data').textContent)) || [];
           } catch (e) { this.items = []; }
+          // Ansicht-Einstellungen lokal pro Gerät (nicht mit dem anderen geteilt)
+          try { this.collapsed = JSON.parse(localStorage.getItem('pl_collapsed') || '{}') || {}; } catch (e) { this.collapsed = {}; }
+          try {
+            const saved = JSON.parse(localStorage.getItem('pl_catOrder') || 'null');
+            if (Array.isArray(saved) && saved.length) {
+              this.catOrder = saved.concat(CATS.filter(c => !saved.includes(c)));
+            }
+          } catch (e) {}
           // Alle ~8 Sek. neu laden, damit ihr beide dieselben Häkchen seht
           setInterval(() => this.load(), 8000);
         },
         categories() {
           const present = [...new Set(this.items.map(i => i.category || 'Sonstiges'))];
-          return CATS.filter(c => present.includes(c)).concat(present.filter(c => !CATS.includes(c)));
+          const ordered = this.catOrder.filter(c => present.includes(c));
+          return ordered.concat(present.filter(c => !this.catOrder.includes(c)));
         },
         itemsIn(cat) {
           return this.items.filter(i => (i.category || 'Sonstiges') === cat);
+        },
+        doneCount(cat) {
+          return this.itemsIn(cat).filter(i => i.completed).length;
         },
         progress() {
           if (!this.items.length) return 0;
@@ -133,37 +148,26 @@
           return `${done} von ${this.items.length} eingepackt`;
         },
 
-        // Drag & Drop – Verschieben zwischen Rubriken
-        initSortable(el) {
-          if (!window.Sortable || el._sortableReady) return;
-          el._sortableReady = true;
-          const self = this;
-          Sortable.create(el, {
-            group: 'packliste',
-            handle: '.drag-handle',
-            forceFallback: true,
-            fallbackTolerance: 5,
-            animation: 150,
-            ghostClass: 'sortable-ghost',
-            chosenClass: 'sortable-chosen',
-            onStart() { self.dragging = true; },
-            onEnd(evt) {
-              self.dragging = false;
-              const id = evt.item.getAttribute('data-id');
-              const toCat = evt.to && evt.to.getAttribute('data-category');
-              const fromCat = evt.from && evt.from.getAttribute('data-category');
-              if (toCat && fromCat && toCat !== fromCat) {
-                // Alpine bleibt die Quelle der Wahrheit: von Sortable eingefügten Knoten entfernen
-                evt.item.remove();
-                const it = self.items.find(x => String(x.id) === String(id));
-                if (it) { it.category = toCat; self.persist(it); }
-              }
-            }
-          });
+        // Abschnitt ein-/ausklappen (lokal gespeichert)
+        toggleCollapse(cat) {
+          this.collapsed[cat] = !this.collapsed[cat];
+          try { localStorage.setItem('pl_collapsed', JSON.stringify(this.collapsed)); } catch (e) {}
+        },
+
+        // Abschnitt hoch/runter verschieben (Reihenfolge lokal gespeichert)
+        moveCat(cat, dir) {
+          const vis = this.categories();
+          const i = vis.indexOf(cat);
+          const j = i + dir;
+          if (i < 0 || j < 0 || j >= vis.length) return;
+          vis.splice(i, 1);
+          vis.splice(j, 0, cat);
+          this.catOrder = vis.concat(this.catOrder.filter(c => !vis.includes(c)));
+          try { localStorage.setItem('pl_catOrder', JSON.stringify(this.catOrder)); } catch (e) {}
         },
 
         async load() {
-          if (this.editingId !== null || this.dragging) return; // nicht mitten im Bearbeiten/Ziehen neu laden
+          if (this.editingId !== null) return; // nicht mitten im Bearbeiten neu laden
           this.loading = true;
           try {
             const res = await fetch('/webhook/packliste/items', { cache: 'no-store' });

@@ -20,7 +20,8 @@ Liste sehen und bearbeiten.
 - Gruppierung nach Kategorie: Dokumente, Kleidung, Schuhe, Kinder, Kulturbeutel, Medikamente, Supplements, Technik, Strand & Wasser, Spiele, Vor der Abreise, Sonstiges
 - Aktualisiert sich alle ~8 Sekunden automatisch, damit beide dieselben Häkchen sehen
 - Eintrag umbenennen: auf den Text tippen (dort auch Rubrik wechseln)
-- Verschieben zwischen Rubriken: am ⠿ ziehen oder im Bearbeiten-Menü die Rubrik ändern
+- Verschieben zwischen Rubriken: im Bearbeiten-Menü die Rubrik ändern
+- Abschnitte ein-/ausklappen (auf die Überschrift tippen) und mit ▲▼ verschieben; Ansicht-Einstellungen werden lokal pro Gerät gespeichert
 
 ## Technik
 
