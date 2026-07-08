@@ -21,6 +21,8 @@ Liste sehen und bearbeiten.
 - Aktualisiert sich alle ~8 Sekunden automatisch, damit beide dieselben Häkchen sehen
 - Eintrag umbenennen: auf den Text tippen (dort auch Rubrik wechseln)
 - Verschieben zwischen Rubriken: im Bearbeiten-Menü die Rubrik ändern
+- Rubriken umbenennen: ✎ neben der Abschnitts-Überschrift (alle Einträge wandern mit)
+- Neue Rubrik anlegen: in der Auswahl „➕ Neue Rubrik…" wählen (unten beim Hinzufügen oder im Bearbeiten-Menü eines Eintrags)
 - Abschnitte ein-/ausklappen (auf die Überschrift tippen) und mit ▲▼ verschieben; Ansicht-Einstellungen werden lokal pro Gerät gespeichert
 
 ## Technik
