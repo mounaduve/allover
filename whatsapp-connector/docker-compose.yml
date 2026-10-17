@@ -1,0 +1,29 @@
+# WhatsApp-Connector für Claude — auf der Synology als Container-Manager-Projekt starten.
+# Die Bridge ist nur intern erreichbar; nach außen geht nur der Connector (Port 8010),
+# und zwar über den Reverse Proxy der Synology mit HTTPS.
+services:
+  bridge:
+    build: ./bridge
+    restart: unless-stopped
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN}
+      TZ: Europe/Berlin
+    volumes:
+      - ./data/bridge:/data
+
+  connector:
+    build: ./connector
+    restart: unless-stopped
+    depends_on:
+      - bridge
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      CONNECTOR_PASSWORD: ${CONNECTOR_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN}
+      BRIDGE_URL: http://bridge:8080
+      TZ: Europe/Berlin
+    volumes:
+      - ./data/connector:/app/data
+    ports:
+      - "8010:8000"
