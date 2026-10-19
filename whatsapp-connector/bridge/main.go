@@ -104,6 +104,7 @@ func main() {
 	mux.HandleFunc("GET /qr.png", b.auth(b.handleQRPNG))
 	mux.HandleFunc("POST /pair-phone", b.auth(b.handlePairPhone))
 	mux.HandleFunc("POST /logout", b.auth(b.handleLogout))
+	mux.HandleFunc("POST /new-qr", b.auth(b.handleNewQR))
 	mux.HandleFunc("GET /chats", b.auth(b.handleChats))
 	mux.HandleFunc("GET /messages", b.auth(b.handleMessages))
 	mux.HandleFunc("GET /contacts", b.auth(b.handleContacts))
@@ -145,6 +146,7 @@ func (b *Bridge) connect(ctx context.Context) error {
 			switch item.Event {
 			case "code":
 				b.qrCode = item.Code
+				b.lastError = ""
 				b.logger.Infof("Neuer QR-Code bereit – auf der Einrichtungsseite scannen")
 			case "success":
 				b.qrCode = ""
@@ -460,6 +462,21 @@ func (b *Bridge) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	go b.relink()
 	writeJSON(w, 200, map[string]any{"status": "abgemeldet"})
+}
+
+// handleNewQR startet eine neue QR-Kopplung, z.B. nachdem der letzte Code
+// ungescannt abgelaufen ist (whatsmeow beendet die QR-Schleife dann selbst).
+func (b *Bridge) handleNewQR(w http.ResponseWriter, _ *http.Request) {
+	if b.client.Store.ID != nil {
+		writeJSON(w, 409, map[string]any{"error": "bereits verknüpft"})
+		return
+	}
+	b.mu.Lock()
+	b.qrCode = ""
+	b.lastError = ""
+	b.mu.Unlock()
+	go b.relink()
+	writeJSON(w, 200, map[string]any{"status": "neuer QR-Code wird erzeugt"})
 }
 
 func (b *Bridge) handleChats(w http.ResponseWriter, r *http.Request) {

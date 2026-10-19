@@ -26,6 +26,10 @@ from app.bridge import BridgeClient, BridgeError
 BASE_URL = os.environ["PUBLIC_BASE_URL"].rstrip("/")
 CONNECTOR_PASSWORD = os.environ["CONNECTOR_PASSWORD"]
 SESSION_SECRET = os.environ["SESSION_SECRET"]
+# Läuft der Connector unter einem Teilpfad (z.B. https://host/whatsapp, weil der
+# Reverse Proxy/Tailscale Funnel den Präfix abschneidet), müssen alle Links und
+# Weiterleitungen im Browser diesen Präfix tragen.
+PREFIX = urlparse(BASE_URL).path.rstrip("/")
 # Nur an diese Hosts schicken wir OAuth-Codes zurück (Claude im Web/Handy bzw.
 # lokale Clients wie Claude Desktop/Code).
 ALLOWED_REDIRECT_HOSTS = {
@@ -50,7 +54,10 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="wk-whatsapp-connector", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, https_only=BASE_URL.startswith("https://"))
+# Eigener Cookie-Name und -Pfad: teilt sich der Connector den Host mit einem anderen Dienst,
+# kommen sich die Sitzungen nicht in die Quere.
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, https_only=BASE_URL.startswith("https://"),
+                   session_cookie="wa_session", path=PREFIX or "/")
 
 
 @app.middleware("http")
@@ -70,6 +77,11 @@ async def require_bearer_for_mcp(request: Request, call_next):
                     )
                 },
             )
+        # FastMCP hängt unter "/mcp/" und würde "/mcp" per 307 dorthin umleiten — mit
+        # absolutem Pfad ohne Teilpfad-Präfix. Darum intern umschreiben statt umleiten.
+        if request.url.path == "/mcp":
+            request.scope["path"] = "/mcp/"
+            request.scope["raw_path"] = b"/mcp/"
     return await call_next(request)
 
 
@@ -116,11 +128,15 @@ async def _check_password(password: str) -> bool:
 # ---------------------------------------------------------------------------
 
 @app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
 def protected_resource_metadata():
     return {"resource": f"{BASE_URL}/mcp", "authorization_servers": [BASE_URL]}
 
 
 @app.get("/.well-known/oauth-authorization-server")
+# Mit Teilpfad sucht Claude die Metadaten unter /.well-known/oauth-authorization-server/whatsapp
+# (RFC 8414); der Proxy leitet das hierher weiter, mit abschließendem Schrägstrich.
+@app.get("/.well-known/oauth-authorization-server/")
 def oauth_metadata():
     return {
         "issuer": BASE_URL,
@@ -173,7 +189,7 @@ def _login_form(redirect_uri: str, state: str, code_challenge: str, method: str,
 <h1>WhatsApp mit Claude verbinden</h1>
 <p class="muted">Claude möchte auf dein WhatsApp zugreifen (Chats lesen, Nachrichten senden).
 Gib zum Bestätigen das Connector-Passwort ein.</p>{err}
-<form method="post" action="/authorize">{hidden}
+<form method="post" action="{PREFIX}/authorize">{hidden}
 <input type="password" name="password" placeholder="Connector-Passwort" autofocus required>
 <button type="submit">Verbinden</button></form>""")
 
@@ -214,20 +230,20 @@ async def token(request: Request):
 
 def _require_admin(request: Request):
     if not request.session.get("admin"):
-        raise HTTPException(303, headers={"Location": "/setup"})
+        raise HTTPException(303, headers={"Location": f"{PREFIX}/setup"})
 
 
 @app.get("/")
 def root():
-    return RedirectResponse("/setup")
+    return RedirectResponse(f"{PREFIX}/setup")
 
 
 @app.get("/setup")
 def setup(request: Request):
     if not request.session.get("admin"):
-        return _page("WhatsApp-Connector", """
+        return _page("WhatsApp-Connector", f"""
 <h1>WhatsApp-Connector</h1><p class="muted">Einrichtung — bitte anmelden.</p>
-<form method="post" action="/setup/login">
+<form method="post" action="{PREFIX}/setup/login">
 <input type="password" name="password" placeholder="Connector-Passwort" autofocus required>
 <button type="submit">Anmelden</button></form>""")
 
@@ -249,9 +265,9 @@ def setup(request: Request):
 <p class="muted">In Claude unter <b>Einstellungen → Connectoren → Eigenen Connector hinzufügen</b> diese URL eintragen:</p>
 <p class="code" style="font-size:1rem;letter-spacing:0">{html.escape(BASE_URL)}/mcp</p>
 <hr>
-<form method="post" action="/setup/revoke-tokens"><button class="secondary" type="submit">
+<form method="post" action="{PREFIX}/setup/revoke-tokens"><button class="secondary" type="submit">
 Alle Claude-Zugänge widerrufen</button></form>
-<form method="post" action="/setup/logout" onsubmit="return confirm('WhatsApp-Verknüpfung wirklich trennen?')">
+<form method="post" action="{PREFIX}/setup/logout" onsubmit="return confirm('WhatsApp-Verknüpfung wirklich trennen?')">
 <button class="secondary" type="submit">WhatsApp-Verknüpfung trennen</button></form>"""
         refresh = None
     else:
@@ -262,12 +278,15 @@ Alle Claude-Zugänge widerrufen</button></form>
         elif st.get("qr_available"):
             link_html = f"""<p>WhatsApp auf dem Handy öffnen → Einstellungen → Verknüpfte Geräte →
 Gerät hinzufügen und diesen Code scannen:</p>
-<img class="qr" src="/setup/qr.png?t={int(time.time())}" alt="QR-Code">"""
+<img class="qr" src="{PREFIX}/setup/qr.png?t={int(time.time())}" alt="QR-Code">"""
         else:
-            link_html = '<p class="muted">QR-Code wird erzeugt…</p>'
+            # Kein Code da: entweder wird er gerade erzeugt, oder der letzte ist ungescannt
+            # abgelaufen — dann erzeugt die Bridge von selbst keinen neuen mehr.
+            link_html = f"""<p class="muted">Gerade ist kein QR-Code aktiv. Handy bereithalten, dann:</p>
+<form method="post" action="{PREFIX}/setup/new-qr"><button type="submit">Neuen QR-Code erzeugen</button></form>"""
         state_html = f"""{link_html}<hr>
 <p class="muted">Seite auf dem Handy selbst geöffnet? Dann stattdessen per Kopplungscode verknüpfen:</p>
-<form method="post" action="/setup/pair-phone">
+<form method="post" action="{PREFIX}/setup/pair-phone">
 <input name="phone" placeholder="Deine Nummer, z.B. +49 170 1234567" required>
 <button class="secondary" type="submit">Kopplungscode anzeigen</button></form>"""
         refresh = None if pair_code else 15
@@ -279,7 +298,7 @@ Gerät hinzufügen und diesen Code scannen:</p>
 async def setup_login(request: Request, password: str = Form(...)):
     if await _check_password(password):
         request.session["admin"] = True
-    return RedirectResponse("/setup", status_code=303)
+    return RedirectResponse(f"{PREFIX}/setup", status_code=303)
 
 
 @app.get("/setup/qr.png")
@@ -299,7 +318,17 @@ def setup_pair_phone(request: Request, phone: str = Form(...)):
         request.session["pair_code"] = bridge.post("/pair-phone", {"phone": phone})["code"]
     except BridgeError as e:
         request.session["flash"] = f"Kopplungscode fehlgeschlagen: {e.message}"
-    return RedirectResponse("/setup", status_code=303)
+    return RedirectResponse(f"{PREFIX}/setup", status_code=303)
+
+
+@app.post("/setup/new-qr")
+def setup_new_qr(request: Request):
+    _require_admin(request)
+    try:
+        bridge.post("/new-qr")
+    except BridgeError as e:
+        request.session["flash"] = f"Neuer QR-Code fehlgeschlagen: {e.message}"
+    return RedirectResponse(f"{PREFIX}/setup", status_code=303)
 
 
 @app.post("/setup/logout")
@@ -307,7 +336,7 @@ def setup_logout(request: Request):
     _require_admin(request)
     bridge.post("/logout")
     request.session["flash"] = "WhatsApp-Verknüpfung getrennt."
-    return RedirectResponse("/setup", status_code=303)
+    return RedirectResponse(f"{PREFIX}/setup", status_code=303)
 
 
 @app.post("/setup/revoke-tokens")
@@ -315,7 +344,7 @@ def setup_revoke(request: Request):
     _require_admin(request)
     store.revoke_all_access_tokens()
     request.session["flash"] = "Alle Claude-Zugänge widerrufen — Claude muss sich neu verbinden."
-    return RedirectResponse("/setup", status_code=303)
+    return RedirectResponse(f"{PREFIX}/setup", status_code=303)
 
 
 # ---------------------------------------------------------------------------

@@ -73,6 +73,8 @@ Voraussetzung: DSM 7.2 oder neuer mit dem Paket **Container Manager**.
    mit dem Connector-Passwort anmelden und den QR-Code scannen: im Handy unter
    *WhatsApp → Einstellungen → Verknüpfte Geräte → Gerät hinzufügen*. Ist die
    Seite auf dem Handy selbst offen, geht es stattdessen per Kopplungscode.
+   Läuft ein QR-Code ungescannt ab, erscheint auf der Seite der Knopf
+   *Neuen QR-Code erzeugen*.
 7. **In Claude eintragen:** *claude.ai → Einstellungen → Connectoren →
    Benutzerdefinierten Connector hinzufügen*
    - URL: `https://whatsapp.deinname.synology.me/mcp`
@@ -81,6 +83,33 @@ Voraussetzung: DSM 7.2 oder neuer mit dem Paket **Container Manager**.
    Danach steht WhatsApp in Claude Chat zur Verfügung, auch in der Handy-App.
    Den alten lokalen WhatsApp-MCP in Claude Code kann man dann entfernen und
    stattdessen auch dort diesen Connector nutzen.
+
+### Alternative: Tailscale Funnel unter einem Teilpfad
+
+Ohne öffentliche IPv4 (z. B. Starlink/CGNAT) gehen DDNS und Reverse Proxy nicht.
+Dann kann Tailscale Funnel den Connector veröffentlichen. claude.ai erreicht nur
+Port 443. Läuft dort schon ein anderer Dienst, hängt der Connector unter einem
+Teilpfad, z. B. `/whatsapp`:
+
+- `.env`: `PUBLIC_BASE_URL=https://<gerät>.<tailnet>.ts.net/whatsapp`
+- Funnel (Tailscale schneidet den Teilpfad ab):
+  ```
+  tailscale funnel --bg --set-path /whatsapp 8010
+  tailscale funnel --bg --set-path /.well-known/oauth-authorization-server/whatsapp http://127.0.0.1:8010/.well-known/oauth-authorization-server
+  tailscale funnel --bg --set-path /.well-known/oauth-protected-resource/whatsapp http://127.0.0.1:8010/.well-known/oauth-protected-resource
+  ```
+  Die beiden `.well-known`-Einträge braucht Claude, um die Anmeldung unter dem
+  Teilpfad zu finden (RFC 8414 / RFC 9728).
+- URL in Claude: `https://<gerät>.<tailnet>.ts.net/whatsapp/mcp`
+
+Der Port ist in der `docker-compose.yml` auf `127.0.0.1` begrenzt. Für den
+Synology-Reverse-Proxy (Ziel `localhost`) reicht das ebenfalls.
+
+**Images bauen auf schwachen NAS:** Hat die NAS wenig RAM, baut man die Images
+auf einem anderen Rechner (`docker buildx build --platform linux/amd64 -t
+whatsapp-connector-bridge:latest --load bridge`, ebenso `connector`), überträgt
+sie mit `docker save … | ssh … docker load` und startet mit
+`docker-compose up -d --no-build`.
 
 ### Aktualisieren
 

@@ -88,3 +88,35 @@ def test_setup_requires_login(client):
     assert client.get("/setup/qr.png", follow_redirects=False).status_code == 303
     client.post("/setup/login", data={"password": "geheim"})
     assert "Verknüpft" in client.get("/setup").text
+
+
+def test_metadata_aliases(client):
+    # Unter einem Teilpfad fragt Claude die Metadaten mit Pfad-Anhang ab (RFC 8414 / RFC 9728).
+    assert client.get("/.well-known/oauth-authorization-server/").json()["issuer"] == "http://testserver"
+    assert client.get("/.well-known/oauth-protected-resource/mcp").json()["resource"] == "http://testserver/mcp"
+
+
+def test_mcp_without_trailing_slash_is_not_redirected(client):
+    # Eine Umleitung würde hinter einem Teilpfad-Proxy den Präfix verlieren.
+    from app import store
+    token = store.create_access_token()
+    r = client.post("/mcp", headers={"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"},
+                    json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                        "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}},
+                    follow_redirects=False)
+    assert r.status_code != 307
+
+
+def test_new_qr_button_after_timeout(client):
+    # Abgelaufener QR-Code: Die Seite bietet einen neuen an, der Knopf ruft die Bridge auf.
+    client.post("/setup/login", data={"password": "geheim"})
+    old = main.bridge
+    main.bridge = FakeBridge(responses={"/status": {"logged_in": False, "qr_available": False,
+                                                    "last_error": "QR-Kopplung beendet: timeout"}})
+    try:
+        assert "Neuen QR-Code erzeugen" in client.get("/setup").text
+        r = client.post("/setup/new-qr", follow_redirects=False)
+        assert r.status_code == 303
+        assert any(c[:2] == ("post", "/new-qr") for c in main.bridge.calls)
+    finally:
+        main.bridge = old
