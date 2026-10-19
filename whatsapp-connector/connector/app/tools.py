@@ -62,8 +62,12 @@ def status(bridge: BridgeClient) -> dict:
     return bridge.get("/status")
 
 
-def list_chats(bridge: BridgeClient, query: str = "", limit: int = 20) -> dict:
-    return bridge.get("/chats", {"query": query, "limit": limit})
+def list_chats(bridge: BridgeClient, query: str = "", limit: int = 20, kind: str = "all",
+               include_archived: bool = False) -> dict:
+    params = {"query": query, "limit": limit, "kind": kind if kind in ("direct", "groups") else ""}
+    if include_archived:
+        params["include_archived"] = "true"
+    return bridge.get("/chats", params)
 
 
 def read_chat(bridge: BridgeClient, chat: str, limit: int = 30, before: str = "", after: str = "") -> dict:
@@ -89,12 +93,66 @@ def search_contacts(bridge: BridgeClient, query: str, limit: int = 20) -> dict:
     return bridge.get("/contacts", {"query": query, "limit": limit})
 
 
-def send_message(bridge: BridgeClient, to: str, text: str) -> dict:
+def typing_ms_for(text: str) -> int:
+    """„schreibt…" etwa so lange, wie ein Mensch für den Text braucht."""
+    return min(12_000, max(1_500, 800 + len(text) * 120))
+
+
+def send_message(bridge: BridgeClient, to: str, parts: list[str] | None = None, text: str = "",
+                 typing: bool = True) -> dict:
+    if isinstance(parts, str):  # einzelner String statt Liste
+        parts = [parts]
+    if parts and text:
+        return {"error": "Entweder parts oder text angeben, nicht beides."}
+    messages = [m.strip() for m in (parts or ([text] if text else [])) if m and m.strip()]
+    if not messages:
+        return {"error": "parts (bevorzugt) oder text angeben."}
+    if len(messages) > 6:
+        return {"error": "Höchstens 6 Nachrichten auf einmal."}
     target = resolve_chat(bridge, to)
     if "error" in target:
         return target
-    result = bridge.post("/send", {"to": target["jid"], "text": text})
-    return {**result, "to_name": target["name"]}
+    sent = []
+    for i, message in enumerate(messages):
+        try:
+            result = bridge.post("/send", {"to": target["jid"], "text": message,
+                                           "typing_ms": typing_ms_for(message) if typing else 0})
+        except BridgeError as e:
+            if not sent:
+                raise
+            return {"error": f"{i} von {len(messages)} Nachrichten gesendet, dann: {e.message}",
+                    "to_name": target["name"], "sent": sent}
+        sent.append(result.get("id"))
+    return {"status": "gesendet", "count": len(sent), "to": target["jid"], "to_name": target["name"], "ids": sent}
+
+
+def archive_chat(bridge: BridgeClient, chat: str, archive: bool = True) -> dict:
+    target = resolve_chat(bridge, chat)
+    if "error" in target:
+        return target
+    try:
+        return bridge.post("/archive", {"jid": target["jid"], "archive": archive})
+    except BridgeError as e:
+        return {"error": e.message}
+
+
+# Zugangsdaten, IDs und nackte Links lehren nichts über den Stil und gehören nicht in Beispiele.
+_NOT_EXAMPLE = re.compile(r"https?://|\S{28,}|api.?key|token|password|passwort|\S+@\S+\.\w+|\d{8,}", re.I)
+
+
+def style_guide(bridge: BridgeClient, chat: str, limit: int = 25) -> dict:
+    """Deine eigenen letzten Nachrichten in einem Chat — als Vorlage für Ton und Länge."""
+    target = resolve_chat(bridge, chat)
+    if "error" in target:
+        return target
+    msgs = bridge.get("/messages", {"chat": target["jid"], "from_me": "true", "limit": 60}).get("messages", [])
+    examples = [m["text"] for m in msgs if m.get("text") and not _NOT_EXAMPLE.search(m["text"])][-limit:]
+    hint = ("Schreib so wie in diesen Beispielen: gleiche Länge, gleiche Anrede, gleiche Zeichensetzung und Emojis. "
+            "Lieber mehrere kurze Nachrichten (parts) als eine lange. Keine privaten Details aus anderen Chats übernehmen.")
+    if not examples:
+        hint = ("In diesem Chat gibt es noch keine eigenen Nachrichten. Kurz, locker und ohne Floskeln schreiben, "
+                "lieber mehrere kurze Nachrichten (parts) als eine lange.")
+    return {"chat_jid": target["jid"], "chat_name": target["name"], "hint": hint, "own_recent_messages": examples}
 
 
 def send_file(bridge: BridgeClient, to: str, filename: str, file_base64: str,

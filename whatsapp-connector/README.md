@@ -37,11 +37,13 @@ Claude Chat ──HTTPS──▶ Synology Reverse Proxy ──▶ connector (Pyt
 | Tool | Was es tut |
 |---|---|
 | `whatsapp_status` | Ist WhatsApp verknüpft und verbunden, mit welcher Nummer? |
-| `whatsapp_list_chats` | Chats (Einzel und Gruppen), neueste zuerst, mit letzter Nachricht; optional nach Name filtern |
+| `whatsapp_list_chats` | Chats, neueste zuerst, mit letzter Nachricht; archivierte ausgeblendet (`include_archived`), nur Einzel- oder Gruppenchats (`kind`), nach Name filtern |
 | `whatsapp_read_chat` | Nachrichten eines Chats lesen (Name, Nummer oder JID); Zeitraum mit `before`/`after` |
 | `whatsapp_search_messages` | Volltextsuche, optional je Chat und Zeitraum |
 | `whatsapp_search_contacts` | Kontakte nach Name oder Nummer suchen |
-| `whatsapp_send_message` | Textnachricht senden; bei mehrdeutigem Namen kommt eine Auswahl zurück statt zu senden |
+| `whatsapp_style_guide` | Eigene letzte Nachrichten im Chat als Vorlage für Ton und Länge (vor jedem Entwurf) |
+| `whatsapp_send_message` | 1–6 kurze Nachrichten (`parts`) mit „schreibt…“ davor; bei mehrdeutigem Namen kommt eine Auswahl zurück statt zu senden. 30 s Abstand zwischen verschiedenen Empfängern |
+| `whatsapp_archive_chat` | Chat archivieren oder zurückholen, auf allen Geräten |
 | `whatsapp_send_file` | Datei senden (Bild als Foto, sonst als Dokument) |
 | `whatsapp_download_media` | Bild, Audio, Video oder Dokument einer Nachricht laden (Bilder werden direkt angezeigt) |
 
@@ -118,6 +120,13 @@ Neue Version einspielen, dann im Container Manager das Projekt *Stoppen* und
 erhalten. WhatsApp muss nicht neu gekoppelt werden.
 
 ## Gut zu wissen
+
+- **Vollständiger Verlauf:** Die Bridge fordert beim Koppeln den ganzen Verlauf an (wie WhatsApp
+  Desktop). Wie viel kommt, entscheidet das Handy. WhatsApp währenddessen am Handy offen lassen.
+- **Archiv-Status:** kommt über den App-State-Abgleich. Scheitert der (bekannter whatsmeow-Fehler
+  „mismatching LTHash“), fordert die Bridge eine Kopie vom Handy an. Die kommt nur, wenn WhatsApp dort offen ist.
+- **Trennen:** Nach „WhatsApp-Verknüpfung trennen“ startet die Bridge neu und zeigt sofort einen
+  neuen QR-Code.
 
 - **Verlauf:** Beim ersten Koppeln schickt WhatsApp einen Teil des älteren
   Verlaufs mit (meist die letzten Monate). Ab dann wird alles mitgeschrieben,

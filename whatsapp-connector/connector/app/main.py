@@ -358,9 +358,9 @@ def whatsapp_status() -> dict:
 
 
 @mcp.tool()
-def whatsapp_list_chats(query: str = "", limit: int = 20) -> dict:
-    """Listet WhatsApp-Chats (Einzel- und Gruppenchats), neueste zuerst, mit letzter Nachricht. query filtert nach Name oder Nummer."""
-    return tools.list_chats(bridge, query, limit)
+def whatsapp_list_chats(query: str = "", limit: int = 20, kind: str = "all", include_archived: bool = False) -> dict:
+    """Listet WhatsApp-Chats, neueste zuerst, mit letzter Nachricht. Archivierte Chats sind ausgeblendet, außer include_archived=true (dann mit archived=true markiert). query filtert nach Name oder Nummer; kind: all, direct (nur Einzelchats) oder groups."""
+    return tools.list_chats(bridge, query, limit, kind, include_archived)
 
 
 @mcp.tool()
@@ -382,9 +382,21 @@ def whatsapp_search_contacts(query: str, limit: int = 20) -> dict:
 
 
 @mcp.tool()
-def whatsapp_send_message(to: str, text: str) -> dict:
-    """Sendet eine WhatsApp-Textnachricht SOFORT. to: Kontakt-/Gruppenname, Telefonnummer mit Ländervorwahl oder JID. Bei mehrdeutigem Namen kommt eine Kandidatenliste zurück statt zu senden. Vor dem Senden den Text mit der Person abstimmen."""
-    return tools.send_message(bridge, to, text)
+def whatsapp_style_guide(chat: str) -> dict:
+    """VOR jedem Entwurf aufrufen, der als die Nutzerin rausgeht: liefert ihre eigenen letzten Nachrichten in diesem Chat als Vorlage für Ton, Länge und Aufteilung."""
+    return tools.style_guide(bridge, chat)
+
+
+@mcp.tool()
+def whatsapp_send_message(to: str, parts: list[str] | None = None, text: str = "", typing: bool = True) -> dict:
+    """Sendet WhatsApp-Nachrichten SOFORT als die Nutzerin. NUR wenn sie es in diesem Gespräch ausdrücklich will: vorher Empfänger und exakten Text zeigen und auf ihr Ja warten. to: Kontakt-/Gruppenname, Telefonnummer mit Ländervorwahl oder JID; bei mehrdeutigem Namen kommt eine Kandidatenliste zurück statt zu senden. parts: 1–6 kurze Nachrichten, die nacheinander rausgehen, jeweils mit „schreibt…" davor (bevorzugt, Stil vorher mit whatsapp_style_guide prüfen); text: eine einzelne Nachricht. Schutz der Nummer vor Sperre: nie denselben Text an mehrere Personen, keine Listen abarbeiten; an eine andere Person als die letzte geht es frühestens 30 s später raus."""
+    return tools.send_message(bridge, to, parts, text, typing)
+
+
+@mcp.tool()
+def whatsapp_archive_chat(chat: str, archive: bool = True) -> dict:
+    """Archiviert einen Chat (archive=true) oder holt ihn aus dem Archiv (archive=false) — auf dem Handy und allen verknüpften Geräten, wie „Chat archivieren" in WhatsApp. Niemand wird benachrichtigt. Nur auf Wunsch der Nutzerin."""
+    return tools.archive_chat(bridge, chat, archive)
 
 
 @mcp.tool()

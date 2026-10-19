@@ -9,6 +9,7 @@ services:
     environment:
       BRIDGE_TOKEN: ${BRIDGE_TOKEN}
       TZ: Europe/Berlin
+      LOG_LEVEL: ${BRIDGE_LOG_LEVEL:-INFO}
     volumes:
       - ./data/bridge:/data
 

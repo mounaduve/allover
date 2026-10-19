@@ -28,6 +28,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -59,7 +62,22 @@ type Bridge struct {
 	mu        sync.Mutex
 	qrCode    string // aktueller QR-Code-Inhalt, solange nicht verknüpft
 	lastError string
+
+	// Sendepause: Nachrichten an eine andere Person als die letzte gehen frühestens
+	// minGapOtherRecipient nach der letzten raus (Schutz der Nummer vor einer Sperre).
+	sendMu        sync.Mutex
+	lastRecipient string
+	lastSendAt    time.Time
+
+	archiveSyncOnce sync.Once
 }
+
+var minGapOtherRecipient = func() time.Duration {
+	if v, err := strconv.Atoi(os.Getenv("MIN_SECONDS_BETWEEN_RECIPIENTS")); err == nil && v >= 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 30 * time.Second
+}()
 
 func main() {
 	if bridgeToken == "" {
@@ -72,9 +90,14 @@ func main() {
 	ctx := context.Background()
 
 	store.SetOSInfo("Claude WhatsApp Connector", [3]uint32{1, 0, 0})
+	// Beim Koppeln den vollständigen Verlauf anfordern (wie WhatsApp Desktop). Ohne das schickt
+	// das Handy nur wenige Nachrichten mit; wie viel es wirklich schickt, entscheidet das Handy.
+	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_DESKTOP.Enum()
+	store.DeviceProps.RequireFullSync = proto.Bool(true)
+	store.DeviceProps.HistorySyncConfig.FullSyncDaysLimit = proto.Uint32(3650)
 
 	container, err := sqlstore.New(ctx, "sqlite3",
-		"file:"+filepath.Join(dataDir, "session.db")+"?_foreign_keys=on", logger.Sub("Store"))
+		"file:"+filepath.Join(dataDir, "session.db")+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=30000", logger.Sub("Store"))
 	if err != nil {
 		log.Fatalf("Session-DB: %v", err)
 	}
@@ -92,6 +115,8 @@ func main() {
 	}
 
 	b := &Bridge{client: whatsmeow.NewClient(device, logger.Sub("Client")), db: db, logger: logger}
+	// Auch beim vollständigen Abgleich Ereignisse liefern — sonst kommt der Archiv-Status nie an.
+	b.client.EmitAppStateEventsOnFullSync = true
 	b.client.AddEventHandler(b.handleEvent)
 
 	if err := b.connect(ctx); err != nil {
@@ -111,6 +136,7 @@ func main() {
 	mux.HandleFunc("POST /send", b.auth(b.handleSend))
 	mux.HandleFunc("POST /send-file", b.auth(b.handleSendFile))
 	mux.HandleFunc("GET /media", b.auth(b.handleMedia))
+	mux.HandleFunc("POST /archive", b.auth(b.handleArchive))
 
 	srv := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -193,7 +219,19 @@ func initMessageDB(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, timestamp);
 		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(timestamp);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`); err != nil {
+		return err
+	}
+	// Spalten aus späteren Versionen nachrüsten (bestehende Datenbanken behalten ihre Daten).
+	for _, col := range []string{"archived INTEGER NOT NULL DEFAULT 0", "wa_jid TEXT"} {
+		if _, err := db.Exec("ALTER TABLE chats ADD COLUMN " + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 // canonical übersetzt LID-Adressen (anonyme WhatsApp-IDs) wenn möglich in die
@@ -306,6 +344,9 @@ func (b *Bridge) storeMessage(ctx context.Context, evt *events.Message, chatName
 		raw, _ = proto.Marshal(evt.Message)
 	}
 	b.upsertChat(chat, b.chatName(ctx, chat, chatNameHint), evt.Info.Timestamp)
+	if raw := evt.Info.Chat.ToNonAD(); !raw.IsEmpty() {
+		_, _ = b.db.Exec(`UPDATE chats SET wa_jid = ? WHERE jid = ?`, raw.String(), chat.String())
+	}
 	_, err := b.db.Exec(`
 		INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, is_from_me, timestamp, text, media_type, filename, raw)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -313,6 +354,42 @@ func (b *Bridge) storeMessage(ctx context.Context, evt *events.Message, chatName
 		text, mediaType, filename, raw)
 	if err != nil {
 		b.logger.Warnf("Nachricht speichern: %v", err)
+	}
+}
+
+// setArchived merkt sich, ob ein Chat in WhatsApp archiviert ist.
+func (b *Bridge) setArchived(ctx context.Context, jid types.JID, archived bool) {
+	chat := b.canonical(ctx, jid)
+	if chat.IsEmpty() {
+		return
+	}
+	_, err := b.db.Exec(`
+		INSERT INTO chats (jid, name, is_group, last_message_time, archived) VALUES (?, '', ?, 0, ?)
+		ON CONFLICT(jid) DO UPDATE SET archived = excluded.archived`,
+		chat.String(), chat.Server == types.GroupServer, archived)
+	if err != nil {
+		b.logger.Warnf("Archiv-Status speichern: %v", err)
+	}
+}
+
+// syncArchiveState holt den Archiv-Status. Gab es noch nie einen vollständigen Abgleich oder
+// scheitert er (z.B. „mismatching LTHash"), bitten wir das Handy um eine Kopie der Sammlung —
+// so macht es auch WhatsApp Web. Die Antwort kommt als Ereignis und landet in setArchived.
+func (b *Bridge) syncArchiveState() {
+	ctx := context.Background()
+	var synced string
+	_ = b.db.QueryRow(`SELECT value FROM meta WHERE key = 'archive_synced'`).Scan(&synced)
+	err := b.client.FetchAppState(ctx, appstate.WAPatchRegularLow, false, false)
+	if err == nil && synced != "" {
+		return
+	}
+	if err != nil {
+		b.logger.Warnf("Archiv-Status abrufen: %v – fordere Kopie vom Handy an", err)
+	} else {
+		b.logger.Infof("Archiv-Status noch nie vollständig – fordere Kopie vom Handy an")
+	}
+	if _, err := b.client.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(appstate.WAPatchRegularLow)); err != nil {
+		b.logger.Warnf("Kopie des Archiv-Status anfordern: %v", err)
 	}
 }
 
@@ -325,13 +402,33 @@ func (b *Bridge) handleEvent(rawEvt any) {
 		b.handleHistorySync(ctx, evt)
 	case *events.Connected:
 		b.logger.Infof("Mit WhatsApp verbunden")
+		// Archiv-Status einmal pro Start vollständig holen: Kopplungen aus älteren
+		// Versionen haben ihn nie gespeichert, und Änderungen während einer Pause fehlen sonst.
+		b.archiveSyncOnce.Do(func() { go b.syncArchiveState() })
+	case *events.Archive:
+		b.setArchived(ctx, evt.JID, evt.Action.GetArchived())
+	case *events.AppStateSyncComplete:
+		if evt.Name == appstate.WAPatchRegularLow {
+			b.logger.Infof("Archiv-Status vollständig abgeglichen (v%d, Wiederherstellung: %v)", evt.Version, evt.Recovery)
+			_, _ = b.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('archive_synced', ?)`, time.Now().Format(time.RFC3339))
+		}
 	case *events.LoggedOut:
 		b.logger.Warnf("Von WhatsApp abgemeldet (%s) – bitte neu verknüpfen", evt.Reason)
 		b.mu.Lock()
 		b.lastError = "Gerät wurde in WhatsApp abgemeldet – neu verknüpfen"
 		b.mu.Unlock()
-		go b.relink()
+		go b.restartForNewDevice()
 	}
+}
+
+// restartForNewDevice beendet den Prozess nach einer Abmeldung. whatsmeow löscht dabei das
+// Gerät, und der alte Client lässt sich nicht wiederverwenden („invalid use of deleted device").
+// Docker startet den Container neu (restart: unless-stopped), dann gibt es sofort einen QR-Code.
+func (b *Bridge) restartForNewDevice() {
+	b.logger.Infof("Abgemeldet – Bridge startet für eine neue Kopplung neu")
+	time.Sleep(2 * time.Second)
+	b.client.Disconnect()
+	os.Exit(0)
 }
 
 // relink startet nach einer Abmeldung eine neue QR-Kopplung, damit die
@@ -350,6 +447,9 @@ func (b *Bridge) handleHistorySync(ctx context.Context, evt *events.HistorySync)
 		chatJID, err := types.ParseJID(conv.GetID())
 		if err != nil {
 			continue
+		}
+		if conv.Archived != nil {
+			b.setArchived(ctx, chatJID, conv.GetArchived())
 		}
 		for _, hm := range conv.GetMessages() {
 			msg, err := b.client.ParseWebMessage(chatJID, hm.GetMessage())
@@ -460,7 +560,7 @@ func (b *Bridge) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	go b.relink()
+	go b.restartForNewDevice()
 	writeJSON(w, 200, map[string]any{"status": "abgemeldet"})
 }
 
@@ -480,14 +580,25 @@ func (b *Bridge) handleNewQR(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (b *Bridge) handleChats(w http.ResponseWriter, r *http.Request) {
-	q := "%" + r.URL.Query().Get("query") + "%"
+	qs := r.URL.Query()
+	q := "%" + qs.Get("query") + "%"
 	limit := intParam(r, "limit", 20, 200)
+	filter := ""
+	if qs.Get("include_archived") != "true" {
+		filter += " AND c.archived = 0"
+	}
+	switch qs.Get("kind") {
+	case "direct":
+		filter += " AND c.is_group = 0"
+	case "groups":
+		filter += " AND c.is_group = 1"
+	}
 	rows, err := b.db.Query(`
-		SELECT c.jid, c.name, c.is_group, c.last_message_time,
+		SELECT c.jid, c.name, c.is_group, c.last_message_time, c.archived,
 			(SELECT COALESCE(NULLIF(m.text, ''), '[' || m.media_type || ']') FROM messages m
 			 WHERE m.chat_jid = c.jid ORDER BY m.timestamp DESC LIMIT 1)
 		FROM chats c
-		WHERE c.name LIKE ? OR c.jid LIKE ?
+		WHERE (c.name LIKE ? OR c.jid LIKE ?) AND c.last_message_time > 0`+filter+`
 		ORDER BY c.last_message_time DESC LIMIT ?`, q, q, limit)
 	if err != nil {
 		writeErr(w, 500, err)
@@ -497,15 +608,15 @@ func (b *Bridge) handleChats(w http.ResponseWriter, r *http.Request) {
 	chats := []map[string]any{}
 	for rows.Next() {
 		var jid, name string
-		var isGroup bool
+		var isGroup, archived bool
 		var ts int64
 		var last sql.NullString
-		if err := rows.Scan(&jid, &name, &isGroup, &ts, &last); err != nil {
+		if err := rows.Scan(&jid, &name, &isGroup, &ts, &archived, &last); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
 		chats = append(chats, map[string]any{
-			"jid": jid, "name": name, "is_group": isGroup,
+			"jid": jid, "name": name, "is_group": isGroup, "archived": archived,
 			"last_message_time": time.Unix(ts, 0).Format(time.RFC3339), "last_message": last.String,
 		})
 	}
@@ -519,6 +630,9 @@ func (b *Bridge) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if chat := qs.Get("chat"); chat != "" {
 		where = append(where, "m.chat_jid = ?")
 		args = append(args, chat)
+	}
+	if qs.Get("from_me") == "true" {
+		where = append(where, "m.is_from_me = 1")
 	}
 	if query := qs.Get("query"); query != "" {
 		where = append(where, "(m.text LIKE ? OR m.filename LIKE ?)")
@@ -629,11 +743,27 @@ func resolveRecipient(to string) (types.JID, error) {
 	return types.NewJID(digits, types.DefaultUserServer), nil
 }
 
-func (b *Bridge) sendAndStore(ctx context.Context, to types.JID, msg *waE2E.Message) (map[string]any, error) {
+func (b *Bridge) sendAndStore(ctx context.Context, to types.JID, msg *waE2E.Message, typing time.Duration) (map[string]any, error) {
 	if !b.client.IsLoggedIn() {
 		return nil, errors.New("WhatsApp ist nicht verknüpft")
 	}
+	// Immer nur eine Sendung zur Zeit; an eine andere Person erst nach der Pause.
+	b.sendMu.Lock()
+	defer b.sendMu.Unlock()
+	if b.lastRecipient != "" && b.lastRecipient != to.String() {
+		if wait := minGapOtherRecipient - time.Since(b.lastSendAt); wait > 0 {
+			time.Sleep(wait)
+		}
+	}
+	if typing > 0 {
+		// „schreibt…" wie ein Mensch; Fehler hier sind egal, die Nachricht geht trotzdem raus.
+		_ = b.client.SendChatPresence(ctx, to, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+		time.Sleep(typing)
+	}
 	resp, err := b.client.SendMessage(ctx, to, msg)
+	if err == nil {
+		b.lastRecipient, b.lastSendAt = to.String(), time.Now()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -654,8 +784,9 @@ func (b *Bridge) sendAndStore(ctx context.Context, to types.JID, msg *waE2E.Mess
 
 func (b *Bridge) handleSend(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		To   string `json:"to"`
-		Text string `json:"text"`
+		To       string `json:"to"`
+		Text     string `json:"text"`
+		TypingMs int    `json:"typing_ms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -670,7 +801,8 @@ func (b *Bridge) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	out, err := b.sendAndStore(r.Context(), to, &waE2E.Message{Conversation: proto.String(req.Text)})
+	typing := time.Duration(min(max(req.TypingMs, 0), 12000)) * time.Millisecond
+	out, err := b.sendAndStore(r.Context(), to, &waE2E.Message{Conversation: proto.String(req.Text)}, typing)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -728,12 +860,77 @@ func (b *Bridge) handleSendFile(w http.ResponseWriter, r *http.Request) {
 			FileEncSHA256: up.FileEncSHA256, FileSHA256: up.FileSHA256, FileLength: &up.FileLength,
 		}}
 	}
-	out, err := b.sendAndStore(r.Context(), to, msg)
+	out, err := b.sendAndStore(r.Context(), to, msg, 0)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, out)
+}
+
+// handleArchive archiviert einen Chat oder holt ihn zurück — auf dem Handy und allen
+// verknüpften Geräten, wie „Chat archivieren" in WhatsApp. WhatsApp will die letzte
+// Nachricht des Chats als Anker im Sync-Patch.
+func (b *Bridge) handleArchive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		JID     string `json:"jid"`
+		Archive *bool  `json:"archive"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Archive == nil {
+		writeJSON(w, 400, map[string]any{"error": "jid und archive sind nötig"})
+		return
+	}
+	if !b.client.IsLoggedIn() {
+		writeJSON(w, 503, map[string]any{"error": "WhatsApp ist nicht verknüpft"})
+		return
+	}
+	jid, err := resolveRecipient(req.JID)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	ctx := r.Context()
+	chat := b.canonical(ctx, jid)
+	group := chat.Server == types.GroupServer
+	// Einzelchats führt WhatsApp inzwischen unter der LID; die braucht der Patch.
+	target := chat
+	if !group {
+		if lid, err := b.client.Store.LIDs.GetLIDForPN(ctx, chat); err == nil && !lid.IsEmpty() {
+			target = lid.ToNonAD()
+		} else {
+			var raw sql.NullString
+			_ = b.db.QueryRow(`SELECT wa_jid FROM chats WHERE jid = ?`, chat.String()).Scan(&raw)
+			if p, err := types.ParseJID(raw.String); raw.Valid && err == nil {
+				target = p
+			}
+		}
+	}
+	var (
+		id, sender string
+		fromMe     bool
+		ts         int64
+		key        *waCommon.MessageKey
+		lastTS     time.Time
+	)
+	err = b.db.QueryRow(`SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`,
+		chat.String()).Scan(&id, &sender, &fromMe, &ts)
+	if err == nil {
+		key = &waCommon.MessageKey{RemoteJID: proto.String(target.String()), FromMe: proto.Bool(fromMe), ID: proto.String(id)}
+		if group && !fromMe && sender != "" {
+			key.Participant = proto.String(types.NewJID(sender, types.DefaultUserServer).String())
+		}
+		lastTS = time.Unix(ts, 0)
+	}
+	if err := b.client.SendAppState(ctx, appstate.BuildArchive(target, *req.Archive, lastTS, key)); err != nil {
+		writeErr(w, 500, fmt.Errorf("Archivieren: %w", err))
+		return
+	}
+	b.setArchived(ctx, chat, *req.Archive)
+	status := "zurückgeholt"
+	if *req.Archive {
+		status = "archiviert"
+	}
+	writeJSON(w, 200, map[string]any{"status": status, "chat": chat.String(), "name": b.chatName(ctx, chat, "")})
 }
 
 func (b *Bridge) handleMedia(w http.ResponseWriter, r *http.Request) {
