@@ -67,9 +67,45 @@ class MainActivity : Activity() {
         }
         col.addView(Button(this).apply { text = "Stimmen laden"; setOnClickListener { loadVoices() } })
         voiceList.postDelayed({ loadVoices() }, 1500)
-        col.addView(label("ElevenLabs-Stimmen-ID (leer = Standard)"))
-        val voice = EditText(this).apply { setText(if (p.elevenVoice == Prefs.DEFAULT_VOICE) "" else p.elevenVoice) }
-        col.addView(voice)
+        col.addView(label("ElevenLabs-Stimme"))
+        val elevenList = android.widget.Spinner(this)
+        col.addView(elevenList)
+        val elevenIds = mutableListOf<String>()
+        col.addView(Button(this).apply {
+            text = "ElevenLabs-Stimmen laden"
+            setOnClickListener {
+                show("Lade ElevenLabs-Stimmen …")
+                Hub.io.execute {
+                    try {
+                        val vs = loadElevenVoices(p.elevenKey)
+                        runOnUiThread {
+                            elevenIds.clear(); elevenIds += vs.map { it.id }
+                            elevenList.tag = null
+                            elevenList.adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                                vs.map { v -> "${v.name}" + (if (v.info.isNotBlank()) " (${v.info})" else "") + (if (v.category == "premade") "" else " – ${v.category}") })
+                            elevenIds.indexOf(p.elevenVoice).takeIf { it >= 0 }?.let { elevenList.setSelection(it) }
+                            elevenList.post { elevenList.tag = "bereit" }
+                            show("${vs.size} Stimmen. Antippen spielt eine Probe und prüft, ob sie mit deinem Konto geht.")
+                        }
+                    } catch (e: Exception) { show("Stimmen laden fehlgeschlagen: ${e.message}") }
+                }
+            }
+        })
+        elevenList.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, pos: Int, id: Long) {
+                if (elevenList.tag == null) return
+                val vid = elevenIds.getOrNull(pos) ?: return
+                show("Teste Stimme …")
+                Hub.io.execute {
+                    val err = Hub.speaker.previewEleven(vid)
+                    if (err == null) {
+                        p.elevenVoice = vid; Hub.speaker.elevenBlocked = false
+                        show("Stimme gespeichert – geht mit deinem Konto.")
+                    } else show("Diese Stimme geht nicht: $err. Bitte eine andere wählen.")
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
         col.addView(label("Sprechtempo (1,0 = normal)"))
         val rate = EditText(this).apply {
             setText(p.speechRate.toString().replace('.', ','))
@@ -85,7 +121,6 @@ class MainActivity : Activity() {
                 p.carMic = carMic.isChecked
                 p.naturalVoice = natural.isChecked
                 Hub.speaker.elevenBlocked = false
-                p.elevenVoice = voice.text.toString()
                 rate.text.toString().replace(',', '.').toFloatOrNull()?.let { p.speechRate = it }
                 show("Gespeichert.")
             }

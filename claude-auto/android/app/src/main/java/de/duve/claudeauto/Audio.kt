@@ -252,8 +252,7 @@ class Speaker(private val context: Context) {
         return f.takeIf { it.length() > 100 } ?: run { f.delete(); null }
     }
 
-    private fun fetchEleven(text: String): java.io.File {
-        val voice = Hub.prefs.elevenVoice
+    private fun fetchEleven(text: String, voice: String = Hub.prefs.elevenVoice): java.io.File {
         val body = org.json.JSONObject()
             .put("text", text)
             .put("model_id", "eleven_flash_v2_5")
@@ -337,6 +336,20 @@ class Speaker(private val context: Context) {
         audio?.requestAudioFocus(focus)
         runCatching { player?.start() }
         Hub.changed()
+    }
+
+    /**
+     * Probe einer ElevenLabs-Stimme (blockiert, im Hintergrund aufrufen).
+     * Gibt null zurück, wenn die Stimme mit diesem Konto geht (und spielt die Probe ab), sonst den Fehler.
+     */
+    fun previewEleven(voiceId: String): String? {
+        val f = try { fetchEleven("So klinge ich.", voiceId) } catch (e: HttpException) {
+            return if (e.code == 402) "nur mit Bezahlplan" else "Fehler ${e.code}"
+        } catch (e: Exception) { return "Fehler: ${e.message}" }
+        stop()
+        val gen = generation
+        worker.execute { playAll(listOf(f), gen) }
+        return null
     }
 
     /** Alles abbrechen, auch was noch in der Warteschlange liegt. */

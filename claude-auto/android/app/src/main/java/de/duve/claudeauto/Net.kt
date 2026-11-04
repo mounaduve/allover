@@ -139,6 +139,22 @@ class Relay(private val prefs: Prefs) {
     }
 }
 
+data class ElevenVoice(val id: String, val name: String, val category: String, val info: String)
+
+/** Stimmen des ElevenLabs-Kontos; „premade“ (Standardstimmen) zuerst. */
+fun loadElevenVoices(key: String): List<ElevenVoice> {
+    val r = http("https://api.elevenlabs.io/v1/voices", headers = mapOf("xi-api-key" to key))
+    if (r.code != 200) throw HttpException(r.code, "Stimmen laden: ${r.code} ${r.body.take(150)}")
+    val arr = JSONObject(r.body).getJSONArray("voices")
+    return (0 until arr.length()).map { i ->
+        val v = arr.getJSONObject(i)
+        val l = v.optJSONObject("labels")
+        val info = listOfNotNull(l?.optString("gender")?.takeIf { it.isNotBlank() }, l?.optString("accent")?.takeIf { it.isNotBlank() })
+            .joinToString(", ")
+        ElevenVoice(v.getString("voice_id"), v.optString("name"), v.optString("category"), info)
+    }.sortedWith(compareBy({ it.category != "premade" }, { it.name }))
+}
+
 /** Spracherkennung über ElevenLabs Scribe. Die Aufnahme geht direkt vom Handy dorthin. */
 class Stt(private val prefs: Prefs) {
     fun transcribe(pcm16k: ByteArray): String {
