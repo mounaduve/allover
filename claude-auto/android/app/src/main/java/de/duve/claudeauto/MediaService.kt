@@ -23,7 +23,7 @@ import androidx.media.MediaBrowserServiceCompat
  * - Liste = laufende Sitzungen auf dem Mac (wie Playlists)
  * - Sitzung antippen = auswählen, letzte Antwort wird vorgelesen
  * - Knöpfe im Player: Sprechen → Haken (Fertig) → wird erkannt und sofort gesendet
- * - Vor/Zurück = nächste/vorige Sitzung, Pause = Vorlesen stoppen, Play = letzte Antwort nochmal
+ * - ⏭ = Sprechen bzw. Fertig, ⏮ = Verwerfen bzw. letzte Antwort; Pause/Play = anhalten/weiterlesen
  */
 class MediaService : MediaBrowserServiceCompat() {
     private enum class Phase { IDLE, RECORDING, RECOGNIZING, CONFIRM, SENDING }
@@ -167,24 +167,27 @@ class MediaService : MediaBrowserServiceCompat() {
             updateState()
         }
 
-        override fun onSkipToNext() = step(1)
-        override fun onSkipToPrevious() = step(-1)
+        // ⏭/⏮ sind umbelegt, weil die kleine Ansicht (Split Screen) und das Lenkrad nur diese Knöpfe haben:
+        // ⏭ = Sprechen, beim Sprechen = Fertig und senden; ⏮ = beim Sprechen Verwerfen, sonst letzte Antwort nochmal
+        override fun onSkipToNext() {
+            goForeground()
+            if (phase == Phase.RECORDING) finishRecording() else startRecording()
+        }
+
+        override fun onSkipToPrevious() {
+            goForeground()
+            if (phase == Phase.RECORDING) cancelRecording() else { Hub.speaker.stop(); onPlay() }
+        }
 
         override fun onCustomAction(action: String?, extras: Bundle?) {
             goForeground()
             when (action) {
                 ACTION_SPEAK -> startRecording()
-                ACTION_DONE -> recorder?.stop()
+                ACTION_DONE -> finishRecording()
                 ACTION_SEND -> send()
-                ACTION_CANCEL -> { recorder?.stop(); Hub.speaker.stop(); phase = Phase.IDLE; Hub.speaker.speak("Verworfen."); updateState() }
+                ACTION_CANCEL -> cancelRecording()
             }
         }
-    }
-
-    private fun step(dir: Int) {
-        if (sessions.isEmpty()) return
-        val i = sessions.indexOfFirst { it.id == current?.id }
-        select(sessions[((if (i < 0) 0 else i + dir) % sessions.size + sessions.size) % sessions.size])
     }
 
     private fun select(s: ChatSession) {
@@ -199,17 +202,34 @@ class MediaService : MediaBrowserServiceCompat() {
         val c = current ?: run { Hub.speaker.speak("Bitte zuerst eine Sitzung wählen."); return }
         if (phase == Phase.RECORDING) return
         Hub.speaker.stop()
-        // Erst ansagen, dann aufnehmen – sonst nimmt das Mikrofon die Ansage mit auf
-        Hub.speaker.speak("Sprich jetzt.") {
-            main.post {
-                // Ende nur per Haken (Fertig), keine automatische Pausen-Erkennung – Mouna will Denkpausen machen können
-                val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = false)
-                recorder = rec
-                phase = Phase.RECORDING
-                updateState()
-                Hub.io.execute { record(rec, c) }
-            }
-        }
+        // Kurzer Ton statt Ansage (schneller); erst danach aufnehmen, damit der Ton nicht mit drauf ist
+        beep()
+        main.postDelayed({
+            // Ende nur per Haken/⏭ (Fertig), keine automatische Pausen-Erkennung – Mouna will Denkpausen machen können
+            val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = false)
+            recorder = rec
+            phase = Phase.RECORDING
+            updateState()
+            Hub.io.execute { record(rec, c) }
+        }, 250)
+    }
+
+    private val tones by lazy { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 90) }
+    private fun beep(double: Boolean = false) {
+        tones.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150)
+        if (double) main.postDelayed({ tones.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150) }, 220)
+    }
+
+    /** Fertig: Aufnahme beenden (danach wird erkannt und gesendet), mit Doppelton als Bestätigung. */
+    private fun finishRecording() {
+        if (phase != Phase.RECORDING) return
+        recorder?.stop()
+        beep(double = true)
+    }
+
+    private fun cancelRecording() {
+        recorder?.stop(); Hub.speaker.stop(); phase = Phase.IDLE
+        Hub.speaker.speak("Verworfen."); updateState()
     }
 
     private fun record(rec: PhoneRecorder, c: ChatSession) {
@@ -267,6 +287,16 @@ class MediaService : MediaBrowserServiceCompat() {
 
     // ---------- Anzeige im Player ----------
 
+    /** App-Symbol als „Cover“, damit keine leere graue Fläche erscheint. */
+    private val art: android.graphics.Bitmap by lazy {
+        val d = getDrawable(R.drawable.ic_claude_auto)!!
+        val b = android.graphics.Bitmap.createBitmap(320, 320, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(b)
+        c.drawColor(0xFF2B2522.toInt())
+        d.setBounds(40, 40, 280, 280); d.draw(c)
+        b
+    }
+
     private fun updateState() {
         val c = current
         val last = c?.let { Hub.lastReply[it.id]?.text }
@@ -290,6 +320,8 @@ class MediaService : MediaBrowserServiceCompat() {
                 .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
                 .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, line)
                 .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, if (Hub.speaker.speaking) Hub.speaker.durationMs else 0L)
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, art)
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, art)
                 .build()
         )
         val active = (Hub.speaker.speaking && !Hub.speaker.paused) || phase == Phase.RECORDING || phase == Phase.RECOGNIZING || phase == Phase.SENDING
