@@ -216,6 +216,7 @@ class MediaService : MediaBrowserServiceCompat() {
                     runCatching { Hub.relay.status().sessions.firstOrNull { it.id == c.id }?.lastReplyId }.getOrNull() ?: c.lastReplyId,
                 )
                 Hub.relay.send(c.id, text)
+                Hub.lastSent[c.id] = text
                 Hub.awaitReply(c.id, c.name, after)
                 done("Gesendet.")
             } catch (e: Exception) {
@@ -244,7 +245,7 @@ class MediaService : MediaBrowserServiceCompat() {
             Phase.SENDING -> "Sende …"
             Phase.IDLE -> when {
                 c == null -> "Sitzung wählen"
-                Hub.isWaiting(c.id) -> "Warte auf Antwort …"
+                Hub.isWaiting(c.id) -> "Gesendet: „${Hub.lastSent[c.id] ?: ""}“ – warte auf Antwort …"
                 last != null -> last.take(200)
                 else -> "Tippe auf Sprechen"
             }

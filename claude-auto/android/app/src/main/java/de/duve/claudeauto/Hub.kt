@@ -21,6 +21,8 @@ object Hub {
 
     /** Letzte bekannte Antwort je Sitzung (für "Nochmal vorlesen"). */
     val lastReply = ConcurrentHashMap<String, Reply>()
+    /** Zuletzt gesendeter Text je Sitzung, damit Mouna im Player sieht, was rausging. */
+    val lastSent = ConcurrentHashMap<String, String>()
     private val waiting = ConcurrentHashMap<String, Boolean>()
     private val listeners = mutableSetOf<() -> Unit>()
 
