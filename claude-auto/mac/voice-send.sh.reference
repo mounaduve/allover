@@ -68,6 +68,23 @@ if [ "$SIG" = "$PREV" ]; then
 fi
 printf '%s' "$SIG" > "$STATE"
 
+# Antworten auf automatische Ereignisse (Meldungen anderer Sitzungen, Hintergrundaufgaben) sind nicht
+# für Mouna – weder ins Auto noch per Telegram. Maßgeblich ist die letzte echte Eingabe (kein Werkzeug-Ergebnis).
+# Gemeint ist die Eingabe VOR der Abschlussantwort – nicht die letzte im Transcript: ein Ereignis kann
+# schon nach der Antwort angehängt sein (passiert 04.11.: Antwort auf Auto-Frage wurde fälschlich übersprungen).
+LAST_INPUT=$(tail -400 "$T" 2>/dev/null | jq -s -r '
+  reduce .[] as $e ({inp: "", ans: ""};
+    if $e.type == "user" then
+      ($e.message.content | if type == "string" then . else ([ .[]? | select(.type == "text") | .text ] | join(" ")) end) as $t
+      | if ($t | length) > 0 then .inp = $t else . end
+    elif $e.type == "assistant" and ([ $e.message.content[]? | select(.type == "text") ] | length) > 0 then .ans = .inp
+    else . end) | .ans' 2>/dev/null)
+case "$LAST_INPUT" in
+  *"<side-sessions-event>"*|*"<task-notification>"*)
+    log "UEBERSPRUNGEN Antwort auf automatisches Ereignis"
+    exit 0 ;;
+esac
+
 # Antwort zusätzlich ans Auto-Relay (Android-Auto-App), unabhängig von Telegram und
 # davon, ob Mouna am Mac sitzt. Konfiguration in ~/.claude/auto-relay.env.
 if [ -f "$HOME/.claude/auto-relay.env" ]; then
