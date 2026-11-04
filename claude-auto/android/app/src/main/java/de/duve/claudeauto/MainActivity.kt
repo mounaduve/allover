@@ -84,6 +84,7 @@ class MainActivity : Activity() {
                 p.swapBytes = swap.isChecked
                 p.carMic = carMic.isChecked
                 p.naturalVoice = natural.isChecked
+                Hub.speaker.elevenBlocked = false
                 p.elevenVoice = voice.text.toString()
                 rate.text.toString().replace(',', '.').toFloatOrNull()?.let { p.speechRate = it }
                 show("Gespeichert.")

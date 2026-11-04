@@ -166,6 +166,8 @@ class Speaker(private val context: Context) {
     /** Es gibt etwas vorzulesen (läuft oder ist angehalten). */
     @Volatile var speaking = false; private set
     @Volatile var paused = false; private set
+    /** ElevenLabs hat Konto/Stimme abgelehnt; wird beim Speichern der Einstellungen zurückgesetzt. */
+    @Volatile var elevenBlocked = false
 
     /** Gesamtlänge und aktuelle Position des laufenden Textes in Millisekunden. */
     val durationMs: Long get() = durations.sum().toLong()
@@ -222,12 +224,14 @@ class Speaker(private val context: Context) {
 
     /** Text → Audiodateien. ElevenLabs bei Bedarf, sonst (oder bei Fehlern) Handy-Stimme. */
     private fun render(text: String, gen: Int): List<java.io.File> {
-        val eleven = Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank()
+        val eleven = Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank() && !elevenBlocked
         return splitSentences(text, if (eleven) 1500 else 3000).mapNotNull { part ->
             if (gen != generation) return@mapNotNull null
             if (eleven) {
                 try { return@mapNotNull fetchEleven(part) } catch (e: Exception) {
                     Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
+                    // Konto/Stimme nicht erlaubt: bis zum nächsten Speichern nicht mehr versuchen, spart Wartezeit
+                    if (e is HttpException && e.code in listOf(401, 402, 403)) elevenBlocked = true
                 }
             }
             synthAndroid(part)
