@@ -33,6 +33,18 @@ object Hub {
         started = true
     }
 
+    private val logBuffer = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** Protokolliert lokal und schickt die Zeile gebündelt ans Relay. */
+    fun log(msg: String) {
+        android.util.Log.i("ClaudeAuto", msg)
+        logBuffer += "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.GERMANY).format(java.util.Date())} $msg"
+        io.execute {
+            val lines = generateSequence { logBuffer.poll() }.toList()
+            if (lines.isNotEmpty() && prefs.deviceToken.isNotBlank()) runCatching { relay.log(lines) }
+        }
+    }
+
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
 
     fun addListener(l: () -> Unit) { listeners += l }
@@ -49,6 +61,7 @@ object Hub {
             try {
                 while (System.currentTimeMillis() < until) {
                     val r = try { relay.waitReply(sessionId, after) } catch (e: Exception) {
+                        log("Antwort abholen fehlgeschlagen: $e")
                         if (++errors > 5) { main.post { speaker.speak("Verbindung zum Relay verloren.") }; break }
                         Thread.sleep(3000); null
                     } ?: continue

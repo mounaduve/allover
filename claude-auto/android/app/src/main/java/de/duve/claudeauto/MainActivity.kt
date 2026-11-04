@@ -37,18 +37,27 @@ class MainActivity : Activity() {
         col.addView(key)
         val swap = CheckBox(this).apply { text = "Byte-Reihenfolge tauschen (nur falls Erkennung Unsinn liefert)"; isChecked = p.swapBytes }
         col.addView(swap)
+        val carMic = CheckBox(this).apply { text = "Im Auto das Automikrofon nutzen (über Bluetooth)"; isChecked = p.carMic }
+        col.addView(carMic)
         col.addView(Button(this).apply {
             text = "Speichern"
             setOnClickListener {
                 p.relayUrl = relay.text.toString()
                 if (key.text.isNotBlank()) { p.elevenKey = key.text.toString(); key.setText(""); key.hint = "gespeichert" }
                 p.swapBytes = swap.isChecked
+                p.carMic = carMic.isChecked
                 show("Gespeichert.")
             }
         })
         col.addView(Button(this).apply {
-            text = "Mikrofon erlauben"
-            setOnClickListener { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1) }
+            text = "Berechtigungen erlauben"
+            setOnClickListener {
+                requestPermissions(arrayOf(
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ), 1)
+            }
         })
         col.addView(Button(this).apply { text = "Mit Mac koppeln"; setOnClickListener { pair() } })
         col.addView(Button(this).apply { text = "Verbindung testen"; setOnClickListener { test() } })
@@ -56,7 +65,7 @@ class MainActivity : Activity() {
         info = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
         col.addView(info)
         setContentView(ScrollView(this).apply { addView(col, ViewGroup.LayoutParams(-1, -2)) })
-        show(if (p.deviceToken.isBlank()) "Noch nicht gekoppelt." else "Gekoppelt.")
+        show(if (p.deviceToken.isBlank()) "Noch nicht gekoppelt." else "Gekoppelt. Im Auto unter den Musik-Apps „Claude Auto“ öffnen.")
     }
 
     private fun show(t: String) = runOnUiThread { info.text = t }
@@ -72,7 +81,7 @@ class MainActivity : Activity() {
                     Thread.sleep(3000)
                     val token = Hub.relay.pairStatus(secret) ?: continue
                     Hub.prefs.deviceToken = token
-                    show("Gekoppelt. Jetzt im Auto „Claude Auto“ öffnen.")
+                    show("Gekoppelt. Im Auto unter den Musik-Apps „Claude Auto“ öffnen.")
                     return@execute
                 }
                 show("Code abgelaufen. Bitte nochmal koppeln.")

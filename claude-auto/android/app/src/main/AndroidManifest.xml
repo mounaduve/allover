@@ -18,24 +18,10 @@
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
-        <!-- CarAudioRecord braucht Car API Level 5 -->
-        <meta-data
-            android:name="androidx.car.app.minCarApiLevel"
-            android:value="5" />
-
+        <!-- Vorlagen-App (AutoService) ist abgeschaltet: Android Auto 17.9 lässt seitlich installierte
+             Vorlagen-Apps nicht zu. Läuft stattdessen als Musik-App (MediaService). -->
         <service
-            android:name=".AutoService"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="androidx.car.app.CarAppService" />
-                <!-- Android Auto (Handy) listet reine IOT-Apps nicht; POI im selben Filter macht sie sichtbar -->
-                <category android:name="androidx.car.app.category.POI" />
-                <category android:name="androidx.car.app.category.IOT" />
-            </intent-filter>
-        </service>
-
-        <service
-            android:name=".MediaSpikeService"
+            android:name=".MediaService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback|microphone">
             <intent-filter>

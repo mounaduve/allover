@@ -3,7 +3,11 @@ package de.duve.claudeauto
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
+import android.media.AudioDeviceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.car.app.CarContext
@@ -64,17 +68,6 @@ class Recorder(private val carContext: CarContext, private val swapBytes: Boolea
         return out.toByteArray()
     }
 
-    private fun rms(b: ByteArray, n: Int): Double {
-        var sum = 0.0
-        var count = 0
-        var i = 0
-        while (i + 1 < n) {
-            val s = ((b[i + 1].toInt() shl 8) or (b[i].toInt() and 0xff)).toShort().toDouble()
-            sum += s * s; count++; i += 2
-        }
-        return if (count == 0) 0.0 else sqrt(sum / count)
-    }
-
     companion object {
         const val SPEECH_RMS = 700.0
         const val PAUSE_SECONDS = 2.0
@@ -83,44 +76,121 @@ class Recorder(private val carContext: CarContext, private val swapBytes: Boolea
     }
 }
 
-/** Vorlesen mit der deutschen Sprachausgabe des Handys. */
+/**
+ * Nimmt über das Handy auf – im Auto bevorzugt über das Automikrofon der Bluetooth-Freisprechverbindung.
+ * Läuft in der Musik-App, die als Vordergrunddienst mit Mikrofon-Typ gestartet ist.
+ */
+class PhoneRecorder(private val context: Context, private val swapBytes: Boolean) {
+    @Volatile private var stopRequested = false
+    /** Welches Mikrofon zuletzt benutzt wurde, fürs Fehlerprotokoll. */
+    var micName = "Handy"; private set
+
+    fun stop() { stopRequested = true }
+
+    fun record(): ByteArray {
+        val audio = context.getSystemService(AudioManager::class.java)
+        val sco = audio.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        val useSco = sco != null && Hub.prefs.carMic && audio.setCommunicationDevice(sco)
+        micName = if (useSco) "Auto (Bluetooth: ${sco?.productName})" else "Handy"
+        val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, RATE,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 3200) * 4)
+        val out = ByteArrayOutputStream()
+        try {
+            if (useSco) Thread.sleep(600) // Freisprechverbindung braucht einen Moment
+            rec.startRecording()
+            val buf = ByteArray(3200) // 100 ms
+            val bytesPerSecond = RATE * 2
+            var heardSpeech = false
+            var silentBytes = 0
+            while (!stopRequested) {
+                val n = rec.read(buf, 0, buf.size)
+                if (n < 0) break
+                if (n == 0) continue
+                if (swapBytes) for (i in 0 until n - 1 step 2) { val t = buf[i]; buf[i] = buf[i + 1]; buf[i + 1] = t }
+                out.write(buf, 0, n)
+                if (rms(buf, n) > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
+                val total = out.size()
+                if (heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
+                if (!heardSpeech && total > bytesPerSecond * Recorder.NO_SPEECH_SECONDS) break
+                if (total > bytesPerSecond * Recorder.MAX_SECONDS) break
+            }
+        } finally {
+            runCatching { rec.stop() }
+            rec.release()
+            if (useSco) audio.clearCommunicationDevice()
+        }
+        return out.toByteArray()
+    }
+
+    companion object { const val RATE = 16000 }
+}
+
+internal fun rms(b: ByteArray, n: Int): Double {
+    var sum = 0.0
+    var count = 0
+    var i = 0
+    while (i + 1 < n) {
+        val s = ((b[i + 1].toInt() shl 8) or (b[i].toInt() and 0xff)).toShort().toDouble()
+        sum += s * s; count++; i += 2
+    }
+    return if (count == 0) 0.0 else sqrt(sum / count)
+}
+
+/** Vorlesen mit der deutschen Sprachausgabe des Handys, als Medienton (läuft so über Android Auto). */
 class Speaker(context: Context) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val attrs = AudioAttributes.Builder()
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setUsage(AudioAttributes.USAGE_MEDIA)
         .build()
-    private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+    private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(attrs).build()
     private var ready = false
-    private val pending = mutableListOf<String>()
+    private val pending = mutableListOf<Pair<String, (() -> Unit)?>>()
+    private val callbacks = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
+    @Volatile var speaking = false; private set
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { st ->
         if (st == TextToSpeech.SUCCESS) {
             tts.language = Locale.GERMANY
             tts.setAudioAttributes(attrs)
             ready = true
-            pending.toList().forEach { speak(it) }
+            pending.toList().forEach { (t, cb) -> speak(t, cb) }
             pending.clear()
         }
     }
 
     init {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { if (!tts.isSpeaking) audio?.abandonAudioFocusRequest(focus) }
-            @Deprecated("alt") override fun onError(id: String?) { audio?.abandonAudioFocusRequest(focus) }
+            override fun onStart(id: String?) { speaking = true; Hub.changed() }
+            override fun onDone(id: String?) { finished(id) }
+            @Deprecated("alt") override fun onError(id: String?) { finished(id) }
+            override fun onStop(id: String?, interrupted: Boolean) { finished(id) }
         })
     }
 
-    fun speak(raw: String) {
-        if (!ready) { pending += raw; return }
+    private fun finished(id: String?) {
+        if (!tts.isSpeaking) {
+            speaking = false
+            audio?.abandonAudioFocusRequest(focus)
+            Hub.changed()
+        }
+        id?.let { callbacks.remove(it)?.invoke() }
+    }
+
+    /** Liest vor; `onDone` läuft, wenn der letzte Teil fertig gesprochen ist. */
+    fun speak(raw: String, onDone: (() -> Unit)? = null) {
+        if (!ready) { pending += raw to onDone; return }
         audio?.requestAudioFocus(focus)
-        cleanForSpeech(raw).chunked(3500).forEachIndexed { i, part ->
-            tts.speak(part, TextToSpeech.QUEUE_ADD, null, "u${System.nanoTime()}_$i")
+        val parts = cleanForSpeech(raw).chunked(3500).ifEmpty { listOf(" ") }
+        parts.forEachIndexed { i, part ->
+            val id = "u${System.nanoTime()}_$i"
+            if (i == parts.lastIndex && onDone != null) callbacks[id] = onDone
+            tts.speak(part, TextToSpeech.QUEUE_ADD, null, id)
         }
     }
 
-    fun stop() { tts.stop(); audio?.abandonAudioFocusRequest(focus) }
+    fun stop() { callbacks.clear(); tts.stop(); speaking = false; audio?.abandonAudioFocusRequest(focus); Hub.changed() }
 
     companion object {
         /** Gleiche Aufbereitung wie im Telegram-Vorlese-Hook: Code, Links und Markdown raus. */

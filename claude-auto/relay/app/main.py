@@ -234,6 +234,24 @@ async def replies(session_id: str, after: int = 0, wait: int = 0):
         await asyncio.sleep(0.5)
 
 
+class LogLines(BaseModel):
+    lines: list[str] = Field(..., max_length=200)
+
+
+@app.post("/api/log", dependencies=[Depends(require_device)])
+def device_log(body: LogLines):
+    """Fehlerprotokoll der App (für die Fehlersuche vom Mac aus), die letzten 500 Zeilen."""
+    log = _get_state("device_log", [])
+    log = (log + [l[:500] for l in body.lines])[-500:]
+    _set_state("device_log", log)
+    return {"ok": True}
+
+
+@app.get("/api/mac/log", dependencies=[Depends(require_mac)])
+def mac_log(lines: int = 100):
+    return {"lines": _get_state("device_log", [])[-lines:]}
+
+
 # ---------- Mac ----------
 
 class MacSession(BaseModel):

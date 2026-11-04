@@ -25,6 +25,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("swap_bytes", false)
         set(v) = p.edit().putBoolean("swap_bytes", v).apply()
 
+    /** Im Auto das Automikrofon über die Bluetooth-Freisprechverbindung nutzen. */
+    var carMic: Boolean
+        get() = p.getBoolean("car_mic", true)
+        set(v) = p.edit().putBoolean("car_mic", v).apply()
+
     companion object {
         const val DEFAULT_RELAY = "https://molli-server.tail4e4456.ts.net/auto"
     }
@@ -92,6 +97,12 @@ class Relay(private val prefs: Prefs) {
         if (r.code != 200) throw HttpException(r.code, r.body)
         val o = JSONObject(r.body)
         return Reply(o.getLong("id"), o.getString("text"))
+    }
+
+    /** Fehlerprotokoll ans Relay, damit Claude auf dem Mac Probleme im Auto sehen kann. */
+    fun log(lines: List<String>) {
+        val b = JSONObject().put("lines", org.json.JSONArray(lines)).toString().toByteArray()
+        http("${prefs.relayUrl}/api/log", "POST", auth() + json, b)
     }
 
     fun pairStart(name: String): Pair<String, String> {

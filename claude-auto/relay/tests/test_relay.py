@@ -50,3 +50,10 @@ def test_roundtrip(client):
     r = client.get("/api/replies", headers=dev, params={"session_id": "local_a"}).json()
     assert r["text"] == "Antwort" and r["id"] == rid
     assert client.get("/api/replies", headers=dev, params={"session_id": "local_a", "after": rid}).status_code == 204
+
+
+def test_log(client):
+    dev = pair(client)
+    assert client.post("/api/log", json={"lines": ["a"]}).status_code == 401
+    client.post("/api/log", headers=dev, json={"lines": ["eins", "zwei"]})
+    assert client.get("/api/mac/log", headers=MAC).json()["lines"] == ["eins", "zwei"]
