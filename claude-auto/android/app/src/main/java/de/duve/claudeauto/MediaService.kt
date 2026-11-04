@@ -120,12 +120,14 @@ class MediaService : MediaBrowserServiceCompat() {
 
         override fun onPlay() {
             goForeground()
+            if (Hub.speaker.paused) { Hub.speaker.resume(); return }
+            if (Hub.speaker.speaking) return
             val c = current ?: sessions.firstOrNull()?.also { select(it); return } ?: return
             val last = Hub.lastReply[c.id]
             Hub.speaker.speak(last?.let { "Letzte Antwort von ${c.name}. ${it.text}" } ?: "Noch keine Antwort von ${c.name}.")
         }
 
-        override fun onPause() { Hub.speaker.stop(); updateState() }
+        override fun onPause() { Hub.speaker.pause(); updateState() }
 
         override fun onStop() {
             Hub.speaker.stop(); recorder?.stop()
@@ -256,16 +258,21 @@ class MediaService : MediaBrowserServiceCompat() {
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, line)
                 .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
                 .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, line)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, if (Hub.speaker.speaking) Hub.speaker.durationMs else 0L)
                 .build()
         )
-        val active = Hub.speaker.speaking || phase == Phase.RECORDING || phase == Phase.RECOGNIZING || phase == Phase.SENDING
+        val active = (Hub.speaker.speaking && !Hub.speaker.paused) || phase == Phase.RECORDING || phase == Phase.RECOGNIZING || phase == Phase.SENDING
         val b = PlaybackStateCompat.Builder()
             .setActions(
                 PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID or PlaybackStateCompat.ACTION_STOP or
                     PlaybackStateCompat.ACTION_SKIP_TO_NEXT or PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
             )
-            .setState(if (active) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED, 0, 1f)
+            .setState(
+                if (active) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
+                if (Hub.speaker.speaking) Hub.speaker.positionMs() else 0L,
+                if (active && Hub.speaker.speaking) 1f else 0f,
+            )
         when (phase) {
             Phase.RECORDING -> {
                 b.addCustomAction(ACTION_DONE, "Fertig", R.drawable.ic_done)

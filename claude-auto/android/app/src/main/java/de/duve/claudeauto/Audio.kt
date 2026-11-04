@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.car.app.CarContext
@@ -140,7 +141,9 @@ internal fun rms(b: ByteArray, n: Int): Double {
 
 /**
  * Vorlesen als Medienton (läuft so über Android Auto).
- * Natürliche Stimme über ElevenLabs, wenn eingeschaltet; sonst die beste deutsche Stimme des Handys.
+ * Jeder Text wird erst in Audiodateien umgewandelt und dann abgespielt – so lässt er sich anhalten,
+ * an derselben Stelle fortsetzen und der Player zeigt Länge und Position.
+ * Stimme: ElevenLabs, wenn eingeschaltet (verbraucht Credits), sonst die gewählte Handy-Stimme.
  */
 class Speaker(private val context: Context) {
     private val audio = context.getSystemService(AudioManager::class.java)
@@ -150,24 +153,32 @@ class Speaker(private val context: Context) {
         .build()
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(attrs).build()
-    private var ready = false
-    private val pending = mutableListOf<Pair<String, (() -> Unit)?>>()
-    private val callbacks = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
-    @Volatile var speaking = false; private set
+    @Volatile private var ready = false
+    private val readyLatch = java.util.concurrent.CountDownLatch(1)
+    private val synthDone = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
     @Volatile private var generation = 0
-    private val elevenLock = Object()
     @Volatile private var player: MediaPlayer? = null
+    @Volatile private var partDone: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var durations: List<Int> = emptyList()
+    @Volatile private var index = 0
+
+    /** Es gibt etwas vorzulesen (läuft oder ist angehalten). */
+    @Volatile var speaking = false; private set
+    @Volatile var paused = false; private set
+
+    /** Gesamtlänge und aktuelle Position des laufenden Textes in Millisekunden. */
+    val durationMs: Long get() = durations.sum().toLong()
+    fun positionMs(): Long = durations.take(index).sum().toLong() + (runCatching { player?.currentPosition }.getOrNull() ?: 0)
 
     // Google-Sprachausgabe bevorzugen, falls installiert – klingt deutlich besser als Samsungs
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext, { st ->
         if (st == TextToSpeech.SUCCESS) {
             tts.language = Locale.GERMANY
             applyVoice()
-            tts.setAudioAttributes(attrs)
             ready = true
-            pending.toList().forEach { (t, cb) -> speak(t, cb) }
-            pending.clear()
         }
+        readyLatch.countDown()
     }, if (isInstalled(context, GOOGLE_TTS)) GOOGLE_TTS else null)
 
     /** Alle deutschen Stimmen der Sprachausgabe, beste zuerst. */
@@ -188,71 +199,53 @@ class Speaker(private val context: Context) {
 
     init {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) { speaking = true; Hub.changed() }
-            override fun onDone(id: String?) { finished(id) }
-            @Deprecated("alt") override fun onError(id: String?) { finished(id) }
-            override fun onStop(id: String?, interrupted: Boolean) { finished(id) }
+            override fun onStart(id: String?) {}
+            override fun onDone(id: String?) { id?.let { synthDone.remove(it)?.countDown() } }
+            @Deprecated("alt") override fun onError(id: String?) { id?.let { synthDone.remove(it)?.countDown() } }
         })
     }
 
-    private fun finished(id: String?) {
-        if (!tts.isSpeaking) {
-            speaking = false
-            audio?.abandonAudioFocusRequest(focus)
-            Hub.changed()
-        }
-        id?.let { callbacks.remove(it)?.invoke() }
-    }
-
-    /** Liest vor; `onDone` läuft, wenn der letzte Teil fertig gesprochen ist. */
+    /** Liest vor (hinter dem, was gerade läuft); `onDone` läuft, wenn alles fertig gesprochen ist. */
     fun speak(raw: String, onDone: (() -> Unit)? = null) {
         val text = cleanForSpeech(raw)
-        if (Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank()) speakEleven(text, onDone)
-        else speakAndroid(text, onDone)
-    }
-
-    private fun speakAndroid(text: String, onDone: (() -> Unit)?) {
-        if (!ready) { pending += text to onDone; return }
-        tts.setSpeechRate(Hub.prefs.speechRate)
-        if (tts.voice?.name != Hub.prefs.androidVoice && Hub.prefs.androidVoice.isNotBlank()) applyVoice()
-        audio?.requestAudioFocus(focus)
-        val parts = text.chunked(3500).ifEmpty { listOf(" ") }
-        parts.forEachIndexed { i, part ->
-            val id = "u${System.nanoTime()}_$i"
-            if (i == parts.lastIndex && onDone != null) callbacks[id] = onDone
-            tts.speak(part, TextToSpeech.QUEUE_ADD, null, id)
+        val gen = generation
+        worker.execute {
+            if (gen != generation || text.isBlank()) return@execute
+            val files = try { render(text, gen) } catch (e: Exception) {
+                Hub.log("Vorlesen fehlgeschlagen: $e"); emptyList()
+            }
+            if (gen != generation || files.isEmpty()) { files.forEach { it.delete() }; return@execute }
+            playAll(files, gen)
+            if (gen == generation) onDone?.invoke()
         }
     }
 
-    /** ElevenLabs: Teile nacheinander holen und abspielen. Bei Fehlern übernimmt die Handy-Stimme. */
-    private fun speakEleven(text: String, onDone: (() -> Unit)?) {
-        val gen = generation
-        Hub.io.execute {
-            synchronized(elevenLock) {
-                if (gen != generation) return@execute
-                speaking = true; Hub.changed()
-                audio?.requestAudioFocus(focus)
-                try {
-                    for (part in splitSentences(text, 1500)) {
-                        if (gen != generation) return@execute
-                        val mp3 = try { fetchEleven(part) } catch (e: Exception) {
-                            Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
-                            null
-                        }
-                        if (mp3 == null) { speakAndroid(part, null); continue }
-                        if (gen != generation) return@execute
-                        play(mp3)
-                    }
-                } finally {
-                    if (gen == generation) {
-                        speaking = false
-                        audio?.abandonAudioFocusRequest(focus)
-                        Hub.changed()
-                        onDone?.invoke()
-                    }
+    /** Text → Audiodateien. ElevenLabs bei Bedarf, sonst (oder bei Fehlern) Handy-Stimme. */
+    private fun render(text: String, gen: Int): List<java.io.File> {
+        val eleven = Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank()
+        return splitSentences(text, if (eleven) 1500 else 3000).mapNotNull { part ->
+            if (gen != generation) return@mapNotNull null
+            if (eleven) {
+                try { return@mapNotNull fetchEleven(part) } catch (e: Exception) {
+                    Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
                 }
             }
+            synthAndroid(part)
         }
+    }
+
+    private fun synthAndroid(text: String): java.io.File? {
+        readyLatch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        if (!ready) return null
+        tts.setSpeechRate(Hub.prefs.speechRate)
+        if (Hub.prefs.androidVoice.isNotBlank() && tts.voice?.name != Hub.prefs.androidVoice) applyVoice()
+        val f = java.io.File.createTempFile("tts", ".wav", context.cacheDir)
+        val id = "f${System.nanoTime()}"
+        val latch = java.util.concurrent.CountDownLatch(1)
+        synthDone[id] = latch
+        if (tts.synthesizeToFile(text, Bundle(), f, id) != TextToSpeech.SUCCESS) { synthDone.remove(id); f.delete(); return null }
+        latch.await(60, java.util.concurrent.TimeUnit.SECONDS)
+        return f.takeIf { it.length() > 100 } ?: run { f.delete(); null }
     }
 
     private fun fetchEleven(text: String): java.io.File {
@@ -279,30 +272,77 @@ class Speaker(private val context: Context) {
         return f
     }
 
-    /** Spielt eine Datei ab und wartet, bis sie fertig ist (oder gestoppt wurde). */
-    private fun play(f: java.io.File) {
-        val done = java.util.concurrent.CountDownLatch(1)
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(attrs)
-            setDataSource(f.path)
-            setOnCompletionListener { done.countDown() }
-            setOnErrorListener { _, _, _ -> done.countDown(); true }
-            prepare()
+    private fun lengthMs(f: java.io.File): Int = runCatching {
+        val r = android.media.MediaMetadataRetriever()
+        r.setDataSource(f.path)
+        val d = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt() ?: 0
+        r.release(); d
+    }.getOrDefault(0)
+
+    /** Spielt alle Teile nacheinander; wartet auch, solange angehalten ist. */
+    private fun playAll(files: List<java.io.File>, gen: Int) {
+        durations = files.map { lengthMs(it) }
+        index = 0
+        paused = false
+        speaking = true
+        audio?.requestAudioFocus(focus)
+        try {
+            for ((i, f) in files.withIndex()) {
+                if (gen != generation) break
+                index = i
+                val done = java.util.concurrent.CountDownLatch(1)
+                val mp = try {
+                    MediaPlayer().apply {
+                        setAudioAttributes(attrs)
+                        setDataSource(f.path)
+                        setOnCompletionListener { done.countDown() }
+                        setOnErrorListener { _, _, _ -> done.countDown(); true }
+                        prepare()
+                    }
+                } catch (e: Exception) { Hub.log("Abspielen fehlgeschlagen: $e"); continue }
+                partDone = done
+                player = mp
+                if (!paused) mp.start()
+                Hub.changed()
+                done.await()
+                player = null
+                runCatching { mp.release() }
+            }
+        } finally {
+            files.forEach { it.delete() }
+            if (gen == generation) {
+                speaking = false; paused = false; durations = emptyList(); index = 0
+                audio?.abandonAudioFocusRequest(focus)
+                Hub.changed()
+            }
         }
-        player = mp
-        mp.start()
-        done.await(5, java.util.concurrent.TimeUnit.MINUTES)
-        player = null
-        runCatching { mp.release() }
-        f.delete()
     }
 
+    /** Anhalten, ohne den Text zu verwerfen. */
+    fun pause() {
+        if (!speaking || paused) return
+        paused = true
+        runCatching { player?.pause() }
+        Hub.changed()
+    }
+
+    /** An derselben Stelle weiterlesen. */
+    fun resume() {
+        if (!paused) return
+        paused = false
+        audio?.requestAudioFocus(focus)
+        runCatching { player?.start() }
+        Hub.changed()
+    }
+
+    /** Alles abbrechen, auch was noch in der Warteschlange liegt. */
     fun stop() {
         generation++
-        callbacks.clear(); tts.stop()
-        player?.let { p -> runCatching { p.stop() }; runCatching { p.release() } }
-        player = null
-        speaking = false; audio?.abandonAudioFocusRequest(focus); Hub.changed()
+        tts.stop()
+        player?.let { p -> runCatching { p.stop() } }
+        partDone?.countDown()
+        speaking = false; paused = false
+        audio?.abandonAudioFocusRequest(focus); Hub.changed()
     }
 
     companion object {
