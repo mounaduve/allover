@@ -30,7 +30,20 @@ class Prefs(context: Context) {
         get() = p.getBoolean("car_mic", true)
         set(v) = p.edit().putBoolean("car_mic", v).apply()
 
+    /** Natürliche Stimme über ElevenLabs (verbraucht Credits), sonst Handy-Stimme. */
+    var naturalVoice: Boolean
+        get() = p.getBoolean("natural_voice", true)
+        set(v) = p.edit().putBoolean("natural_voice", v).apply()
+    var elevenVoice: String
+        get() = p.getString("eleven_voice", DEFAULT_VOICE)!!.ifBlank { DEFAULT_VOICE }
+        set(v) = p.edit().putString("eleven_voice", v.trim()).apply()
+    /** Sprechtempo, 1.0 = normal. */
+    var speechRate: Float
+        get() = p.getFloat("speech_rate", 1.15f)
+        set(v) = p.edit().putFloat("speech_rate", v.coerceIn(0.5f, 2.5f)).apply()
+
     companion object {
+        const val DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"
         const val DEFAULT_RELAY = "https://molli-server.tail4e4456.ts.net/auto"
     }
 }

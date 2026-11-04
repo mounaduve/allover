@@ -7,6 +7,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -137,8 +138,11 @@ internal fun rms(b: ByteArray, n: Int): Double {
     return if (count == 0) 0.0 else sqrt(sum / count)
 }
 
-/** Vorlesen mit der deutschen Sprachausgabe des Handys, als Medienton (läuft so über Android Auto). */
-class Speaker(context: Context) {
+/**
+ * Vorlesen als Medienton (läuft so über Android Auto).
+ * Natürliche Stimme über ElevenLabs, wenn eingeschaltet; sonst die beste deutsche Stimme des Handys.
+ */
+class Speaker(private val context: Context) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val attrs = AudioAttributes.Builder()
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -150,15 +154,23 @@ class Speaker(context: Context) {
     private val pending = mutableListOf<Pair<String, (() -> Unit)?>>()
     private val callbacks = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
     @Volatile var speaking = false; private set
-    private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { st ->
+    @Volatile private var generation = 0
+    private val elevenLock = Object()
+    @Volatile private var player: MediaPlayer? = null
+
+    // Google-Sprachausgabe bevorzugen, falls installiert – klingt deutlich besser als Samsungs
+    private val tts: TextToSpeech = TextToSpeech(context.applicationContext, { st ->
         if (st == TextToSpeech.SUCCESS) {
             tts.language = Locale.GERMANY
+            tts.voices?.filter { it.locale.language == "de" && !it.features.contains("notInstalled") }
+                ?.maxByOrNull { it.quality * 10 - it.latency }
+                ?.let { tts.voice = it }
             tts.setAudioAttributes(attrs)
             ready = true
             pending.toList().forEach { (t, cb) -> speak(t, cb) }
             pending.clear()
         }
-    }
+    }, if (isInstalled(context, GOOGLE_TTS)) GOOGLE_TTS else null)
 
     init {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -180,9 +192,16 @@ class Speaker(context: Context) {
 
     /** Liest vor; `onDone` läuft, wenn der letzte Teil fertig gesprochen ist. */
     fun speak(raw: String, onDone: (() -> Unit)? = null) {
-        if (!ready) { pending += raw to onDone; return }
+        val text = cleanForSpeech(raw)
+        if (Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank()) speakEleven(text, onDone)
+        else speakAndroid(text, onDone)
+    }
+
+    private fun speakAndroid(text: String, onDone: (() -> Unit)?) {
+        if (!ready) { pending += text to onDone; return }
+        tts.setSpeechRate(Hub.prefs.speechRate)
         audio?.requestAudioFocus(focus)
-        val parts = cleanForSpeech(raw).chunked(3500).ifEmpty { listOf(" ") }
+        val parts = text.chunked(3500).ifEmpty { listOf(" ") }
         parts.forEachIndexed { i, part ->
             val id = "u${System.nanoTime()}_$i"
             if (i == parts.lastIndex && onDone != null) callbacks[id] = onDone
@@ -190,7 +209,86 @@ class Speaker(context: Context) {
         }
     }
 
-    fun stop() { callbacks.clear(); tts.stop(); speaking = false; audio?.abandonAudioFocusRequest(focus); Hub.changed() }
+    /** ElevenLabs: Teile nacheinander holen und abspielen. Bei Fehlern übernimmt die Handy-Stimme. */
+    private fun speakEleven(text: String, onDone: (() -> Unit)?) {
+        val gen = generation
+        Hub.io.execute {
+            synchronized(elevenLock) {
+                if (gen != generation) return@execute
+                speaking = true; Hub.changed()
+                audio?.requestAudioFocus(focus)
+                try {
+                    for (part in splitSentences(text, 1500)) {
+                        if (gen != generation) return@execute
+                        val mp3 = try { fetchEleven(part) } catch (e: Exception) {
+                            Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
+                            null
+                        }
+                        if (mp3 == null) { speakAndroid(part, null); continue }
+                        if (gen != generation) return@execute
+                        play(mp3)
+                    }
+                } finally {
+                    if (gen == generation) {
+                        speaking = false
+                        audio?.abandonAudioFocusRequest(focus)
+                        Hub.changed()
+                        onDone?.invoke()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun fetchEleven(text: String): java.io.File {
+        val voice = Hub.prefs.elevenVoice
+        val body = org.json.JSONObject()
+            .put("text", text)
+            .put("model_id", "eleven_flash_v2_5")
+            .put("language_code", "de")
+            .put("voice_settings", org.json.JSONObject().put("speed", Hub.prefs.speechRate.coerceIn(0.7f, 1.2f).toDouble()))
+            .toString().toByteArray()
+        val c = java.net.URL("https://api.elevenlabs.io/v1/text-to-speech/$voice?output_format=mp3_44100_64")
+            .openConnection() as java.net.HttpURLConnection
+        c.requestMethod = "POST"; c.connectTimeout = 10_000; c.readTimeout = 30_000; c.doOutput = true
+        c.setRequestProperty("xi-api-key", Hub.prefs.elevenKey)
+        c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("Accept", "audio/mpeg")
+        c.outputStream.use { it.write(body) }
+        if (c.responseCode != 200) {
+            val err = c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            throw HttpException(c.responseCode, "${c.responseCode} ${err.take(200)}")
+        }
+        val f = java.io.File.createTempFile("tts", ".mp3", context.cacheDir)
+        c.inputStream.use { inp -> f.outputStream().use { inp.copyTo(it) } }
+        return f
+    }
+
+    /** Spielt eine Datei ab und wartet, bis sie fertig ist (oder gestoppt wurde). */
+    private fun play(f: java.io.File) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        val mp = MediaPlayer().apply {
+            setAudioAttributes(attrs)
+            setDataSource(f.path)
+            setOnCompletionListener { done.countDown() }
+            setOnErrorListener { _, _, _ -> done.countDown(); true }
+            prepare()
+        }
+        player = mp
+        mp.start()
+        done.await(5, java.util.concurrent.TimeUnit.MINUTES)
+        player = null
+        runCatching { mp.release() }
+        f.delete()
+    }
+
+    fun stop() {
+        generation++
+        callbacks.clear(); tts.stop()
+        player?.let { p -> runCatching { p.stop() }; runCatching { p.release() } }
+        player = null
+        speaking = false; audio?.abandonAudioFocusRequest(focus); Hub.changed()
+    }
 
     companion object {
         /** Gleiche Aufbereitung wie im Telegram-Vorlese-Hook: Code, Links und Markdown raus. */
@@ -205,5 +303,23 @@ class Speaker(context: Context) {
             .replace(Regex("\\n{2,}"), ". ")
             .replace(Regex("[ \\t]{2,}"), " ")
             .trim()
+
+        const val GOOGLE_TTS = "com.google.android.tts"
+
+        fun isInstalled(c: Context, pkg: String) =
+            runCatching { c.packageManager.getPackageInfo(pkg, 0) }.isSuccess
+
+        /** Teilt an Satzenden, damit die Stimme nicht mitten im Satz neu ansetzt. */
+        fun splitSentences(t: String, max: Int): List<String> {
+            val out = mutableListOf<String>()
+            val cur = StringBuilder()
+            for (s in t.split(Regex("(?<=[.!?])\\s+"))) {
+                if (cur.isNotEmpty() && cur.length + s.length > max) { out += cur.toString(); cur.clear() }
+                if (cur.isNotEmpty()) cur.append(' ')
+                cur.append(s)
+            }
+            if (cur.isNotBlank()) out += cur.toString()
+            return out.flatMap { it.chunked(max) }
+        }
     }
 }

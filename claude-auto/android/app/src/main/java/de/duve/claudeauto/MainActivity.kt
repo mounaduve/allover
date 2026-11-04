@@ -39,6 +39,17 @@ class MainActivity : Activity() {
         col.addView(swap)
         val carMic = CheckBox(this).apply { text = "Im Auto das Automikrofon nutzen (über Bluetooth)"; isChecked = p.carMic }
         col.addView(carMic)
+        val natural = CheckBox(this).apply { text = "Natürliche Stimme (ElevenLabs, verbraucht Credits)"; isChecked = p.naturalVoice }
+        col.addView(natural)
+        col.addView(label("ElevenLabs-Stimmen-ID (leer = Standard)"))
+        val voice = EditText(this).apply { setText(if (p.elevenVoice == Prefs.DEFAULT_VOICE) "" else p.elevenVoice) }
+        col.addView(voice)
+        col.addView(label("Sprechtempo (1,0 = normal)"))
+        val rate = EditText(this).apply {
+            setText(p.speechRate.toString().replace('.', ','))
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+        }
+        col.addView(rate)
         col.addView(Button(this).apply {
             text = "Speichern"
             setOnClickListener {
@@ -46,6 +57,9 @@ class MainActivity : Activity() {
                 if (key.text.isNotBlank()) { p.elevenKey = key.text.toString(); key.setText(""); key.hint = "gespeichert" }
                 p.swapBytes = swap.isChecked
                 p.carMic = carMic.isChecked
+                p.naturalVoice = natural.isChecked
+                p.elevenVoice = voice.text.toString()
+                rate.text.toString().replace(',', '.').toFloatOrNull()?.let { p.speechRate = it }
                 show("Gespeichert.")
             }
         })
