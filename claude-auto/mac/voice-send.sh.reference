@@ -39,8 +39,10 @@ PREV=$(cat "$STATE" 2>/dev/null)
 # steht am Ende noch ein Werkzeug-Aufruf oder -Ergebnis. Zwischentexte aus dem
 # gleichen Zug liegen zu diesem Zeitpunkt schon in der Datei — nur ihre Position
 # unterscheidet sie von der Abschlussantwort, nicht ihr Inhalt.
+# Neuere Claude-Code-Versionen hängen nach der Antwort noch Verwaltungszeilen an (agent-name,
+# bridge-session, system …) – darum zählt der letzte user/assistant-Eintrag, nicht die letzte Zeile.
 ends_with_text() {
-  tail -1 "$T" 2>/dev/null | jq -e '
+  tail -40 "$T" 2>/dev/null | jq -c 'select(.type == "user" or .type == "assistant")' 2>/dev/null | tail -1 | jq -e '
     select(.type == "assistant")
     | [ .message.content[]? | select(.type == "text") | select(.text | length > 0) ]
     | length > 0
