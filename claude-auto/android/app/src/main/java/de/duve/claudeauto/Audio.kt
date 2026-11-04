@@ -308,6 +308,8 @@ class Speaker(private val context: Context) {
     companion object {
         /** Gleiche Aufbereitung wie im Telegram-Vorlese-Hook: Code, Links und Markdown raus. */
         fun cleanForSpeech(t: String): String = t
+            // Zitierte Frage am Antwortanfang („> Aus dem Auto: …“) nicht nochmal vorlesen
+            .replace(Regex("(?m)^>\\s*Aus dem Auto:.*$"), "")
             .replace(Regex("```.*?```", RegexOption.DOT_MATCHES_ALL), " Codeblock übersprungen. ")
             .replace(Regex("`([^`]*)`"), "$1")
             .replace(Regex("!?\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
