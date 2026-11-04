@@ -31,6 +31,7 @@ class MediaService : MediaBrowserServiceCompat() {
     private lateinit var session: MediaSessionCompat
     private val main = Handler(Looper.getMainLooper())
     private var sessions: List<ChatSession> = emptyList()
+    private val order = mutableListOf<String>()
     private var macOnline = false
     private var current: ChatSession? = null
     private var phase = Phase.IDLE
@@ -98,9 +99,17 @@ class MediaService : MediaBrowserServiceCompat() {
                 val st = Hub.relay.status()
                 main.post {
                     announceNewReplies(st.sessions)
-                    sessions = st.sessions.take(MAX_SESSIONS); macOnline = st.macOnline
+                    // Feste Reihenfolge: Bekannte Sitzungen bleiben an ihrem Platz, neue kommen oben dazu.
+                    // Sonst verrutscht die Liste beim Aktualisieren und Mouna tippt die falsche Sitzung an.
+                    val byId = st.sessions.associateBy { it.id }
+                    order.retainAll(byId.keys)
+                    st.sessions.map { it.id }.filter { it !in order }.reversed().forEach { order.add(0, it) }
+                    val newList = order.mapNotNull { byId[it] }.take(MAX_SESSIONS)
+                    val changed = newList.map { Triple(it.id, it.name, it.busy) } != sessions.map { Triple(it.id, it.name, it.busy) } ||
+                        macOnline != st.macOnline
+                    sessions = newList; macOnline = st.macOnline
                     current = current?.let { c -> sessions.firstOrNull { it.id == c.id } ?: c }
-                    notifyChildrenChanged(ROOT)
+                    if (changed) notifyChildrenChanged(ROOT)
                 }
             } catch (e: Exception) {
                 Hub.log("Sitzungen laden fehlgeschlagen: $e")
