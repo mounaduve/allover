@@ -1,0 +1,14 @@
+# Relay für die Android-Auto-App. Läuft auf molli-server, nur lokal gebunden;
+# nach außen über Tailscale Funnel unter /auto (Tailscale schneidet den Präfix ab).
+services:
+  relay:
+    build: .
+    image: claude-auto-relay:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8020:8000"
+    environment:
+      MAC_TOKEN: ${MAC_TOKEN}
+      TZ: Europe/Berlin
+    volumes:
+      - ./data:/app/data

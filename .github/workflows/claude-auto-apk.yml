@@ -1,0 +1,49 @@
+name: Claude Auto APK
+
+on:
+  push:
+    branches: [claude/android-auto]
+    paths: [claude-auto/android/**, .github/workflows/claude-auto-apk.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+      - name: Signaturschlüssel
+        env:
+          KS: ${{ secrets.AUTO_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/auto.jks"
+            echo "AUTO_KEYSTORE_PATH=$RUNNER_TEMP/auto.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Bauen
+        env:
+          AUTO_KEYSTORE_PASSWORD: ${{ secrets.AUTO_KEYSTORE_PASSWORD }}
+        run: gradle -p claude-auto/android :app:assembleRelease --no-daemon
+      - name: APK bereitstellen
+        run: cp claude-auto/android/app/build/outputs/apk/release/app-release.apk claude-auto.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-auto-apk
+          path: claude-auto.apk
+      - name: Als Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete claude-auto-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create claude-auto-latest claude-auto.apk --prerelease \
+            --target "$GITHUB_SHA" --title "Claude Auto (aktuell)" \
+            --notes "Build ${GITHUB_RUN_NUMBER}. APK aufs Handy laden und installieren."

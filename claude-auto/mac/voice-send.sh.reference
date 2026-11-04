@@ -1,0 +1,138 @@
+#!/bin/bash
+# Abgekoppelt vom Stop-Hook gestartet.
+#   $1 = Transcript-Pfad
+#   $2 = Zustandsdatei (Pruefsumme der zuletzt vertonten Antwort dieser Session)
+T="$1"; STATE="$2"
+LOG="$HOME/.claude/voice-notify.log"
+# Konfiguration laden, ohne bereits gesetzte Umgebungsvariablen zu ueberschreiben
+# (sonst waere ein einmaliges VOICE_ALWAYS=1 oder VOICE_IDLE_MIN=0 wirkungslos)
+load_conf() {
+  [ -f "$1" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in ''|'#'*) continue ;; esac
+    if [ -z "$(eval "printf '%s' \"\${$k+gesetzt}\"")" ]; then
+      eval "$k=\$v"
+    fi
+  done < "$1"
+}
+
+load_conf "$HOME/.claude/telegram-voice.env"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$LOG"; }
+
+MAXLEN="${VOICE_MAXLEN:-3000}"
+MINLEN="${VOICE_MINLEN:-0}"
+WAIT="${VOICE_WAIT:-25}"       # Sekunden, die auf die neue Antwort gewartet wird
+VOICE="${VOICE_NAME-}"
+
+last_text() {
+  jq -rs '
+    [ .[] | select(.type=="assistant")
+          | [ .message.content[]? | select(.type=="text") | .text ]
+          | select(length > 0) | join("\n") ] | last // empty
+  ' "$T" 2>/dev/null
+}
+
+PREV=$(cat "$STATE" 2>/dev/null)
+
+# Warten, bis der LETZTE Eintrag im Transcript eine Assistant-Nachricht mit Text
+# ist. Der Stop-Hook feuert oft, bevor die Abschlussantwort geschrieben ist; dann
+# steht am Ende noch ein Werkzeug-Aufruf oder -Ergebnis. Zwischentexte aus dem
+# gleichen Zug liegen zu diesem Zeitpunkt schon in der Datei — nur ihre Position
+# unterscheidet sie von der Abschlussantwort, nicht ihr Inhalt.
+ends_with_text() {
+  tail -1 "$T" 2>/dev/null | jq -e '
+    select(.type == "assistant")
+    | [ .message.content[]? | select(.type == "text") | select(.text | length > 0) ]
+    | length > 0
+  ' >/dev/null 2>&1
+}
+READY=0
+for _ in $(seq 1 $((WAIT * 2))); do
+  if ends_with_text; then READY=1; break; fi
+  sleep 0.5
+done
+if [ "$READY" != "1" ]; then
+  log "ABBRUCH Abschlussantwort kam nicht innerhalb ${WAIT}s"
+  exit 0
+fi
+sleep 0.5   # kurz nachfassen, falls noch ein Textblock folgt
+
+TEXT=$(last_text)
+if [ -z "$TEXT" ]; then log "ABBRUCH kein Text im Transcript"; exit 0; fi
+SIG=$(printf '%s' "$TEXT" | shasum -a 256 | cut -d' ' -f1)
+if [ "$SIG" = "$PREV" ]; then
+  log "UEBERSPRUNGEN schon vertont"
+  exit 0
+fi
+printf '%s' "$SIG" > "$STATE"
+
+# Antwort zusätzlich ans Auto-Relay (Android-Auto-App), unabhängig von Telegram und
+# davon, ob Mouna am Mac sitzt. Konfiguration in ~/.claude/auto-relay.env.
+if [ -f "$HOME/.claude/auto-relay.env" ]; then
+  ( . "$HOME/.claude/auto-relay.env"
+    if [ -n "$AUTO_RELAY_URL" ] && [ -n "$AUTO_MAC_TOKEN" ]; then
+      CLI_ID=$(basename "$T" .jsonl)
+      if jq -n --arg c "$CLI_ID" --arg t "$TEXT" '{cli_id:$c, text:$t}' \
+         | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST \
+             -H "Authorization: Bearer $AUTO_MAC_TOKEN" -H 'Content-Type: application/json' \
+             --data-binary @- "$AUTO_RELAY_URL/api/mac/replies" | grep -q '^200$'; then
+        log "AUTO-RELAY gesendet ${CLI_ID:0:8}"
+      else
+        log "AUTO-RELAY FEHLER ${CLI_ID:0:8}"
+      fi
+    fi )
+fi
+
+# Nur verschicken, wenn Mouna nicht am MacBook sitzt: Bildschirm gesperrt oder
+# seit VOICE_IDLE_MIN Minuten keine Tastatur-/Mauseingabe. VOICE_ALWAYS=1 hebt das auf.
+IDLE_MIN="${VOICE_IDLE_MIN:-5}"
+if [ "${VOICE_ALWAYS:-0}" != "1" ]; then
+  LOCKED=$(ioreg -n Root -d1 -k CGSSessionScreenIsLocked 2>/dev/null | grep -c 'CGSSessionScreenIsLocked = Yes')
+  IDLE=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}')
+  [ -n "$IDLE" ] || IDLE=0
+  if [ "$LOCKED" -lt 1 ] && [ "$IDLE" -lt $((IDLE_MIN * 60)) ]; then
+    log "UEBERSPRUNGEN am Mac aktiv (untaetig ${IDLE}s, Schwelle $((IDLE_MIN * 60))s)"
+    exit 0
+  fi
+fi
+
+SPOKEN=$(printf '%s' "$TEXT" | python3 -c '
+import re, sys
+t = sys.stdin.read()
+t = re.sub(r"```.*?```", " Codeblock uebersprungen. ", t, flags=re.S)
+t = re.sub(r"`([^`]*)`", r"\1", t)
+t = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", t)
+t = re.sub(r"https?://\S+", " Link ", t)
+t = re.sub(r"^\s*\|.*\|\s*$", "", t, flags=re.M)
+t = re.sub(r"[*_#>]+", "", t)
+t = re.sub(r"^\s*[-•]\s*", "", t, flags=re.M)
+t = re.sub(r"\n{2,}", ". ", t)
+t = re.sub(r"[ \t]{2,}", " ", t)
+print(t.strip())
+')
+[ -n "$SPOKEN" ] || { log "ABBRUCH Text nach Aufbereitung leer"; exit 0; }
+if [ "${#SPOKEN}" -lt "$MINLEN" ]; then log "UEBERSPRUNGEN zu kurz (${#SPOKEN})"; exit 0; fi
+if [ "${#SPOKEN}" -gt "$MAXLEN" ]; then
+  SPOKEN="${SPOKEN:0:$MAXLEN} ... Rest gekuerzt, bitte am Rechner nachlesen."
+fi
+
+d=$(mktemp -d "${TMPDIR:-/tmp}/ccvoice.XXXXXX")
+printf '%s' "$SPOKEN" > "$d/text.txt"
+
+if [ -n "$VOICE" ] && [ "$VOICE" != "system" ]; then
+  say -v "$VOICE" -f "$d/text.txt" -o "$d/a.aiff" 2>/dev/null
+else
+  say -f "$d/text.txt" -o "$d/a.aiff" 2>/dev/null
+fi
+[ -s "$d/a.aiff" ] || { log "FEHLER say erzeugte keine Datei"; rm -rf "$d"; exit 1; }
+ffmpeg -y -i "$d/a.aiff" -c:a libopus -b:a 32k "$d/a.ogg" >/dev/null 2>&1 \
+  || { log "FEHLER ffmpeg"; rm -rf "$d"; exit 1; }
+
+RES=$(curl -s -m 120 -F "chat_id=$TELEGRAM_CHAT_ID" -F "voice=@$d/a.ogg" \
+      "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendVoice")
+if printf '%s' "$RES" | grep -q '"ok":true'; then
+  log "GESENDET (${#SPOKEN} Z.): $(head -c 60 "$d/text.txt" | tr '\n' ' ')"
+else
+  log "FEHLER telegram: $(printf '%s' "$RES" | head -c 200)"
+fi
+rm -rf "$d"
