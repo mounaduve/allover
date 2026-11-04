@@ -162,15 +162,29 @@ class Speaker(private val context: Context) {
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext, { st ->
         if (st == TextToSpeech.SUCCESS) {
             tts.language = Locale.GERMANY
-            tts.voices?.filter { it.locale.language == "de" && !it.features.contains("notInstalled") }
-                ?.maxByOrNull { it.quality * 10 - it.latency }
-                ?.let { tts.voice = it }
+            applyVoice()
             tts.setAudioAttributes(attrs)
             ready = true
             pending.toList().forEach { (t, cb) -> speak(t, cb) }
             pending.clear()
         }
     }, if (isInstalled(context, GOOGLE_TTS)) GOOGLE_TTS else null)
+
+    /** Alle deutschen Stimmen der Sprachausgabe, beste zuerst. */
+    fun germanVoices(): List<android.speech.tts.Voice> =
+        (if (ready) tts.voices else null).orEmpty()
+            .filter { it.locale.language == "de" }
+            .sortedWith(compareBy({ it.features.contains("notInstalled") }, { -it.quality }, { it.name }))
+
+    /** Engine-Name, damit Mouna sieht, ob Google oder Samsung spricht. */
+    fun engineName(): String = if (ready) tts.defaultEngine ?: "?" else "lädt …"
+
+    private fun applyVoice() {
+        val voices = tts.voices?.filter { it.locale.language == "de" }.orEmpty()
+        val chosen = voices.firstOrNull { it.name == Hub.prefs.androidVoice }
+            ?: voices.filter { !it.features.contains("notInstalled") }.maxByOrNull { it.quality * 10 - it.latency }
+        chosen?.let { tts.voice = it }
+    }
 
     init {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -200,6 +214,7 @@ class Speaker(private val context: Context) {
     private fun speakAndroid(text: String, onDone: (() -> Unit)?) {
         if (!ready) { pending += text to onDone; return }
         tts.setSpeechRate(Hub.prefs.speechRate)
+        if (tts.voice?.name != Hub.prefs.androidVoice && Hub.prefs.androidVoice.isNotBlank()) applyVoice()
         audio?.requestAudioFocus(focus)
         val parts = text.chunked(3500).ifEmpty { listOf(" ") }
         parts.forEachIndexed { i, part ->

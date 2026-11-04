@@ -32,11 +32,15 @@ class Prefs(context: Context) {
 
     /** Natürliche Stimme über ElevenLabs (verbraucht Credits), sonst Handy-Stimme. */
     var naturalVoice: Boolean
-        get() = p.getBoolean("natural_voice", true)
+        get() = p.getBoolean("natural_voice", false)
         set(v) = p.edit().putBoolean("natural_voice", v).apply()
     var elevenVoice: String
         get() = p.getString("eleven_voice", DEFAULT_VOICE)!!.ifBlank { DEFAULT_VOICE }
         set(v) = p.edit().putString("eleven_voice", v.trim()).apply()
+    /** Gewählte Handy-Stimme (Name aus der Google-Sprachausgabe), leer = beste verfügbare. */
+    var androidVoice: String
+        get() = p.getString("android_voice", "")!!
+        set(v) = p.edit().putString("android_voice", v).apply()
     /** Sprechtempo, 1.0 = normal. */
     var speechRate: Float
         get() = p.getFloat("speech_rate", 1.15f)

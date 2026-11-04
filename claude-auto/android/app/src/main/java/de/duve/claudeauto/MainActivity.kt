@@ -41,6 +41,32 @@ class MainActivity : Activity() {
         col.addView(carMic)
         val natural = CheckBox(this).apply { text = "Natürliche Stimme (ElevenLabs, verbraucht Credits)"; isChecked = p.naturalVoice }
         col.addView(natural)
+        col.addView(label("Handy-Stimme"))
+        val voiceList = android.widget.Spinner(this)
+        col.addView(voiceList)
+        val voiceNames = mutableListOf<String>()
+        fun loadVoices() {
+            val vs = Hub.speaker.germanVoices()
+            voiceNames.clear(); voiceNames += vs.map { it.name }
+            val labels = vs.mapIndexed { i, v ->
+                "Stimme ${i + 1}" + (if (v.isNetworkConnectionRequired) " (online)" else "") +
+                    (if (v.features.contains("notInstalled")) " – nicht geladen" else "") + "  [${v.name}]"
+            }
+            voiceList.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+            voiceList.tag = null // erste automatische Auswahl nicht als Wahl werten
+            voiceNames.indexOf(p.androidVoice).takeIf { it >= 0 }?.let { voiceList.setSelection(it) }
+            voiceList.post { voiceList.tag = "bereit" }
+            show("Sprachausgabe: ${Hub.speaker.engineName()}, ${vs.size} deutsche Stimmen.")
+        }
+        voiceList.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, pos: Int, id: Long) {
+                if (voiceList.tag == null) return
+                voiceNames.getOrNull(pos)?.let { if (it != p.androidVoice) { p.androidVoice = it; Hub.speaker.speak("So klinge ich.") } }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        col.addView(Button(this).apply { text = "Stimmen laden"; setOnClickListener { loadVoices() } })
+        voiceList.postDelayed({ loadVoices() }, 1500)
         col.addView(label("ElevenLabs-Stimmen-ID (leer = Standard)"))
         val voice = EditText(this).apply { setText(if (p.elevenVoice == Prefs.DEFAULT_VOICE) "" else p.elevenVoice) }
         col.addView(voice)
