@@ -68,7 +68,7 @@ object Hub {
                         Thread.sleep(3000); null
                     } ?: continue
                     lastReply[sessionId] = r
-                    main.post { speaker.speak("Antwort von $name. ${r.text}") }
+                    main.post { speaker.speak(r.text) } // Mouna will direkt die Antwort hören, ohne Vorspann
                     break
                 }
             } finally {
