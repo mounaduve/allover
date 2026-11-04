@@ -81,7 +81,7 @@ class Recorder(private val carContext: CarContext, private val swapBytes: Boolea
  * Nimmt über das Handy auf – im Auto bevorzugt über das Automikrofon der Bluetooth-Freisprechverbindung.
  * Läuft in der Musik-App, die als Vordergrunddienst mit Mikrofon-Typ gestartet ist.
  */
-class PhoneRecorder(private val context: Context, private val swapBytes: Boolean) {
+class PhoneRecorder(private val context: Context, private val swapBytes: Boolean, private val stopOnPause: Boolean = true) {
     @Volatile private var stopRequested = false
     /** Welches Mikrofon zuletzt benutzt wurde, fürs Fehlerprotokoll. */
     var micName = "Handy"; private set
@@ -112,7 +112,7 @@ class PhoneRecorder(private val context: Context, private val swapBytes: Boolean
                 out.write(buf, 0, n)
                 if (rms(buf, n) > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
                 val total = out.size()
-                if (heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
+                if (stopOnPause && heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
                 if (!heardSpeech && total > bytesPerSecond * Recorder.NO_SPEECH_SECONDS) break
                 if (total > bytesPerSecond * Recorder.MAX_SECONDS) break
             }

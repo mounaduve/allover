@@ -22,7 +22,7 @@ import androidx.media.MediaBrowserServiceCompat
  *
  * - Liste = laufende Sitzungen auf dem Mac (wie Playlists)
  * - Sitzung antippen = auswählen, letzte Antwort wird vorgelesen
- * - Knöpfe im Player: Sprechen → (Ich schicke: …) → Senden / Nochmal
+ * - Knöpfe im Player: Sprechen → Haken (Fertig) → wird erkannt und sofort gesendet
  * - Vor/Zurück = nächste/vorige Sitzung, Pause = Vorlesen stoppen, Play = letzte Antwort nochmal
  */
 class MediaService : MediaBrowserServiceCompat() {
@@ -169,7 +169,8 @@ class MediaService : MediaBrowserServiceCompat() {
         // Erst ansagen, dann aufnehmen – sonst nimmt das Mikrofon die Ansage mit auf
         Hub.speaker.speak("Sprich jetzt.") {
             main.post {
-                val rec = PhoneRecorder(this, Hub.prefs.swapBytes)
+                // Ende nur per Haken (Fertig), keine automatische Pausen-Erkennung – Mouna will Denkpausen machen können
+                val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = false)
                 recorder = rec
                 phase = Phase.RECORDING
                 updateState()
@@ -190,10 +191,10 @@ class MediaService : MediaBrowserServiceCompat() {
             Hub.log("Erkannt (${text.length} Zeichen)")
             main.post {
                 if (text.isBlank()) { done("Ich habe nichts verstanden."); return@post }
+                // Mouna will nicht bestätigen: Haken = senden, ohne Vorlesen
                 recognized = text
                 phase = Phase.CONFIRM
-                updateState()
-                Hub.speaker.speak("Ich schicke an ${c.name}: $text. Senden oder verwerfen?")
+                send()
             }
         } catch (e: Exception) {
             Hub.log("Spracherkennung fehlgeschlagen: ${e.message}")
@@ -216,10 +217,10 @@ class MediaService : MediaBrowserServiceCompat() {
                 )
                 Hub.relay.send(c.id, text)
                 Hub.awaitReply(c.id, c.name, after)
-                done("Gesendet. Ich lese die Antwort vor, sobald sie da ist.")
+                done("Gesendet.")
             } catch (e: Exception) {
                 Hub.log("Senden fehlgeschlagen: $e")
-                main.post { phase = Phase.CONFIRM; updateState(); Hub.speaker.speak("Senden fehlgeschlagen. Nochmal Senden?") }
+                main.post { phase = Phase.CONFIRM; updateState(); Hub.speaker.speak("Senden fehlgeschlagen. Tippe auf Senden für einen neuen Versuch.") }
             }
         }
     }
