@@ -107,9 +107,9 @@ class Relay(private val prefs: Prefs) {
     }
 
     /** Wartet bis zu 25 s auf eine neue Antwort; null, wenn noch keine da ist. */
-    fun waitReply(sessionId: String, after: Long): Reply? {
+    fun waitReply(sessionId: String, after: Long, wait: Int = 25): Reply? {
         val sid = URLEncoder.encode(sessionId, "UTF-8")
-        val r = http("${prefs.relayUrl}/api/replies?session_id=$sid&after=$after&wait=25", headers = auth(), timeoutMs = 40_000)
+        val r = http("${prefs.relayUrl}/api/replies?session_id=$sid&after=$after&wait=$wait", headers = auth(), timeoutMs = 40_000)
         if (r.code == 204) return null
         if (r.code != 200) throw HttpException(r.code, r.body)
         val o = JSONObject(r.body)

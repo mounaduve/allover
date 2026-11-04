@@ -39,7 +39,7 @@ class MediaService : MediaBrowserServiceCompat() {
     private var foreground = false
     private val listener = { updateState() }
     private val refresher = object : Runnable {
-        override fun run() { refreshSessions(); main.postDelayed(this, 30_000) }
+        override fun run() { refreshSessions(); main.postDelayed(this, 20_000) }
     }
 
     override fun onCreate() {
@@ -97,6 +97,7 @@ class MediaService : MediaBrowserServiceCompat() {
             try {
                 val st = Hub.relay.status()
                 main.post {
+                    announceNewReplies(st.sessions)
                     sessions = st.sessions.take(MAX_SESSIONS); macOnline = st.macOnline
                     current = current?.let { c -> sessions.firstOrNull { it.id == c.id } ?: c }
                     notifyChildrenChanged(ROOT)
@@ -106,6 +107,29 @@ class MediaService : MediaBrowserServiceCompat() {
                 main.post { macOnline = false; notifyChildrenChanged(ROOT) }
             }
         }
+    }
+
+    // ---------- Neue Antworten ansagen ----------
+
+    /** Letzte bekannte Antwort-ID je Sitzung; beim ersten Laden nur merken, nichts ansagen. */
+    private val knownReply = mutableMapOf<String, Long>()
+    private var baselineDone = false
+
+    /**
+     * Mouna will hören, wenn irgendeine Sitzung fertig ist – aber nur angesagt, nicht vorgelesen.
+     * Antworten auf Nachrichten aus dem Auto liest Hub ohnehin komplett vor, die zählen hier nicht.
+     */
+    private fun announceNewReplies(all: List<ChatSession>) {
+        for (s in all) {
+            val prev = knownReply[s.id]
+            knownReply[s.id] = maxOf(prev ?: 0, s.lastReplyId)
+            if (!baselineDone || s.lastReplyId <= (prev ?: 0)) continue
+            if (Hub.isWaiting(s.id) || (Hub.lastReply[s.id]?.id ?: 0) >= s.lastReplyId) continue
+            if (phase == Phase.IDLE) current = s // Play liest dann genau diese Antwort
+            Hub.speaker.speak("Neue Antwort von ${s.name}.")
+            updateState()
+        }
+        baselineDone = true
     }
 
     // ---------- Bedienung ----------
@@ -123,8 +147,15 @@ class MediaService : MediaBrowserServiceCompat() {
             if (Hub.speaker.paused) { Hub.speaker.resume(); return }
             if (Hub.speaker.speaking) return
             val c = current ?: sessions.firstOrNull()?.also { select(it); return } ?: return
-            val last = Hub.lastReply[c.id]
-            Hub.speaker.speak(last?.let { "Letzte Antwort von ${c.name}. ${it.text}" } ?: "Noch keine Antwort von ${c.name}.")
+            // Neueste Antwort vom Relay holen – auch auf Fragen, die nicht aus dem Auto kamen
+            Hub.io.execute {
+                val last = runCatching { Hub.relay.waitReply(c.id, 0, wait = 0) }.getOrNull()
+                    ?.also { Hub.lastReply[c.id] = it } ?: Hub.lastReply[c.id]
+                main.post {
+                    Hub.speaker.speak(last?.let { "Antwort von ${c.name}. ${it.text}" } ?: "Noch keine Antwort von ${c.name}.")
+                    updateState()
+                }
+            }
         }
 
         override fun onPause() { Hub.speaker.pause(); updateState() }
