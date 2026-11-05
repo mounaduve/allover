@@ -2,185 +2,329 @@ package de.duve.claudeauto
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
-import android.widget.CheckBox
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 
-/** Einrichtung am Handy: Relay, ElevenLabs-Schlüssel, Mikrofon, Kopplung mit dem Mac. */
+/** Einstellungen (Look aus dem Entwurf in Claude Design): Verbindung, Gespräch, Stimme, Spracherkennung. */
 class MainActivity : Activity() {
-    private lateinit var info: TextView
+    private lateinit var connDot: View
+    private lateinit var connTitle: TextView
+    private lateinit var connInfo: TextView
+    private lateinit var relay: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Hub.init(this)
+        ivoryBars()
         val p = Hub.prefs
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad * 2, pad, pad) }
-        fun label(t: String) = TextView(this).apply { text = t; textSize = 15f; setPadding(0, pad, 0, 0) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(40)) }
 
-        col.addView(TextView(this).apply { text = "Claude Auto"; textSize = 24f })
-        col.addView(Button(this).apply {
-            text = "Gespräch am Handy"
-            setOnClickListener { startActivity(android.content.Intent(this@MainActivity, TalkActivity::class.java)) }
-        })
-        col.addView(label("Relay-Adresse"))
-        val relay = EditText(this).apply { setText(p.relayUrl); inputType = InputType.TYPE_TEXT_VARIATION_URI }
-        col.addView(relay)
-        col.addView(label("ElevenLabs-API-Schlüssel"))
-        val key = EditText(this).apply {
-            hint = if (p.elevenKey.isBlank()) "einfügen" else "gespeichert – zum Ändern neu einfügen"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        // Kopf
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(circleButton(R.drawable.ui_back, 44, 22, C.IVORY, C.SLATE, "Zum Gespräch").apply {
+            setOnClickListener { openTalk() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = -dp(12) })
+        head.addView(text("Einstellungen", 24f, serif = true, bold = true).apply { setPadding(dp(4), 0, 0, 0) })
+        col.addView(head, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+
+        // Verbindung zum Mac
+        val conn = section(col, "Verbindung zum Mac")
+        val cRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        connDot = View(this).apply { background = oval(C.BORDER2) }
+        cRow.addView(connDot, LinearLayout.LayoutParams(dp(10), dp(10)))
+        connTitle = text("Prüfe …", 16f, bold = true).apply { setPadding(dp(10), 0, 0, 0) }
+        cRow.addView(connTitle, LinearLayout.LayoutParams(0, -2, 1f))
+        conn.addView(cRow)
+        connInfo = text("", 14f, C.GREY).apply { setPadding(0, dp(6), 0, 0); visibility = View.GONE }
+        conn.addView(connInfo)
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btns.addView(pill("Verbindung testen") { test() }, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(8) })
+        btns.addView(pill(if (p.deviceToken.isBlank()) "Mit Mac koppeln" else "Neu koppeln") { pair() }, LinearLayout.LayoutParams(0, -2, 1f))
+        conn.addView(btns, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        conn.addView(text("Relay-Adresse", 13f, C.GREY).apply { setPadding(0, dp(14), 0, dp(6)) })
+        relay = field(p.relayUrl, InputType.TYPE_TEXT_VARIATION_URI)
+        conn.addView(relay)
+
+        // Gespräch
+        val talk = section(col, "Gespräch", padded = false)
+        switchRow(talk, "Bei Sprechpause senden", "Aus: Senden nur per Tipp", p.autoSend, true) { p.autoSend = it }
+        switchRow(talk, "Nach der Antwort weiter zuhören", "Piep, dann direkt antworten", p.autoListen, true) { p.autoListen = it }
+        val silence = listOf(5, 8, 15)
+        val sRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(12), dp(10)); minimumHeight = dp(56)
         }
-        col.addView(key)
-        val swap = CheckBox(this).apply { text = "Byte-Reihenfolge tauschen (nur falls Erkennung Unsinn liefert)"; isChecked = p.swapBytes }
-        col.addView(swap)
-        val carMic = CheckBox(this).apply { text = "Im Auto das Automikrofon nutzen (über Bluetooth)"; isChecked = p.carMic }
-        col.addView(carMic)
-        val natural = CheckBox(this).apply { text = "Natürliche Stimme (ElevenLabs, verbraucht Credits)"; isChecked = p.naturalVoice }
-        col.addView(natural)
-        col.addView(label("Handy-Stimme"))
-        val voiceList = android.widget.Spinner(this)
-        col.addView(voiceList)
+        sRow.addView(text("Gespräch endet nach Stille von", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+        sRow.addView(spinner(silence.map { "$it s" }, silence.indexOf(p.silenceSeconds).coerceAtLeast(1)) { p.silenceSeconds = silence[it] })
+        talk.addView(sRow)
+
+        // Stimme
+        val voice = section(col, "Stimme")
+        val seg = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(C.DOCK, 12)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val segHandy = segment("Handy · kostenlos")
+        val segEleven = segment("ElevenLabs")
+        seg.addView(segHandy, LinearLayout.LayoutParams(0, dp(40), 1f))
+        seg.addView(segEleven, LinearLayout.LayoutParams(0, dp(40), 1f))
+        voice.addView(seg)
+
+        val handyBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        handyBox.addView(text("Handy-Stimme", 13f, C.GREY).apply { setPadding(0, dp(14), 0, dp(6)) })
+        val handyList = styledSpinner()
+        handyBox.addView(handyList, LinearLayout.LayoutParams(-1, dp(44)))
+        voice.addView(handyBox)
+
+        val elevenBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        elevenBox.addView(text("ElevenLabs-Stimme (verbraucht Credits)", 13f, C.GREY).apply { setPadding(0, dp(14), 0, dp(6)) })
+        val elevenList = styledSpinner()
+        elevenBox.addView(elevenList, LinearLayout.LayoutParams(-1, dp(44)))
+        val elevenIds = mutableListOf<String>()
+        fun loadEleven() {
+            Hub.io.execute {
+                try {
+                    val vs = loadElevenVoices(p.elevenKey)
+                    runOnUiThread {
+                        elevenIds.clear(); elevenIds += vs.map { it.id }
+                        elevenList.tag = null
+                        elevenList.adapter = adapter(vs.map { v -> v.name + (if (v.info.isNotBlank()) " (${v.info})" else "") + (if (v.category == "premade") "" else " – ${v.category}") })
+                        elevenIds.indexOf(p.elevenVoice).takeIf { it >= 0 }?.let { elevenList.setSelection(it) }
+                        elevenList.post { elevenList.tag = "bereit" }
+                        toast("${vs.size} Stimmen. Antippen spielt eine Probe und prüft, ob sie mit deinem Konto geht.")
+                    }
+                } catch (e: Exception) {
+                    Hub.log("ElevenLabs-Stimmen laden fehlgeschlagen: ${e.message}")
+                    toast("Stimmen laden fehlgeschlagen: ${e.message}")
+                }
+            }
+        }
+        elevenList.onItemSelectedListener = onPick { pos ->
+            if (elevenList.tag == null) return@onPick
+            val vid = elevenIds.getOrNull(pos) ?: return@onPick
+            Hub.io.execute {
+                val err = Hub.speaker.previewEleven(vid)
+                if (err == null) { p.elevenVoice = vid; Hub.speaker.elevenBlocked = false; toast("Stimme gespeichert – geht mit deinem Konto.") }
+                else toast("Diese Stimme geht nicht: $err. Bitte eine andere wählen.")
+            }
+        }
+        voice.addView(elevenBox)
+
+        fun showVoice() {
+            val eleven = p.naturalVoice
+            segHandy.isSelected = !eleven; segEleven.isSelected = eleven
+            styleSegment(segHandy); styleSegment(segEleven)
+            handyBox.visibility = if (eleven) View.GONE else View.VISIBLE
+            elevenBox.visibility = if (eleven) View.VISIBLE else View.GONE
+            if (eleven && elevenIds.isEmpty()) loadEleven()
+        }
+        segHandy.setOnClickListener { p.naturalVoice = false; Hub.speaker.elevenBlocked = false; showVoice() }
+        segEleven.setOnClickListener {
+            if (p.elevenKey.isBlank()) { toast("Erst unten den ElevenLabs-Schlüssel eintragen."); return@setOnClickListener }
+            p.naturalVoice = true; Hub.speaker.elevenBlocked = false; showVoice()
+        }
+
         val voiceNames = mutableListOf<String>()
-        fun loadVoices() {
+        fun loadHandyVoices() {
             val vs = Hub.speaker.germanVoices()
             voiceNames.clear(); voiceNames += vs.map { it.name }
-            val labels = vs.mapIndexed { i, v ->
-                "Stimme ${i + 1}" + (if (v.isNetworkConnectionRequired) " (online)" else "") +
-                    (if (v.features.contains("notInstalled")) " – nicht geladen" else "") + "  [${v.name}]"
-            }
-            voiceList.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-            voiceList.tag = null // erste automatische Auswahl nicht als Wahl werten
-            voiceNames.indexOf(p.androidVoice).takeIf { it >= 0 }?.let { voiceList.setSelection(it) }
-            voiceList.post { voiceList.tag = "bereit" }
-            show("Sprachausgabe: ${Hub.speaker.engineName()}, ${vs.size} deutsche Stimmen.")
+            handyList.tag = null
+            handyList.adapter = adapter(vs.mapIndexed { i, v ->
+                "Stimme ${i + 1}" + (if (v.isNetworkConnectionRequired) " · online" else "") + (if (v.features.contains("notInstalled")) " · nicht geladen" else "")
+            }.ifEmpty { listOf("Stimmen werden geladen …") })
+            voiceNames.indexOf(p.androidVoice).takeIf { it >= 0 }?.let { handyList.setSelection(it) }
+            handyList.post { handyList.tag = "bereit" }
         }
-        voiceList.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, pos: Int, id: Long) {
-                if (voiceList.tag == null) return
-                voiceNames.getOrNull(pos)?.let { if (it != p.androidVoice) { p.androidVoice = it; Hub.speaker.speak("So klinge ich.") } }
-            }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        handyList.onItemSelectedListener = onPick { pos ->
+            if (handyList.tag == null) return@onPick
+            voiceNames.getOrNull(pos)?.let { if (it != p.androidVoice) { p.androidVoice = it; Hub.speaker.speak("So klinge ich.") } }
         }
-        col.addView(Button(this).apply { text = "Stimmen laden"; setOnClickListener { loadVoices() } })
-        voiceList.postDelayed({ loadVoices() }, 1500)
-        col.addView(label("ElevenLabs-Stimme"))
-        val elevenList = android.widget.Spinner(this)
-        col.addView(elevenList)
-        val elevenIds = mutableListOf<String>()
-        col.addView(Button(this).apply {
-            text = "ElevenLabs-Stimmen laden"
-            setOnClickListener {
-                show("Lade ElevenLabs-Stimmen …")
-                Hub.io.execute {
-                    try {
-                        val vs = loadElevenVoices(p.elevenKey)
-                        runOnUiThread {
-                            elevenIds.clear(); elevenIds += vs.map { it.id }
-                            elevenList.tag = null
-                            elevenList.adapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                                vs.map { v -> "${v.name}" + (if (v.info.isNotBlank()) " (${v.info})" else "") + (if (v.category == "premade") "" else " – ${v.category}") })
-                            elevenIds.indexOf(p.elevenVoice).takeIf { it >= 0 }?.let { elevenList.setSelection(it) }
-                            elevenList.post { elevenList.tag = "bereit" }
-                            show("${vs.size} Stimmen. Antippen spielt eine Probe und prüft, ob sie mit deinem Konto geht.")
-                        }
-                    } catch (e: Exception) { show("Stimmen laden fehlgeschlagen: ${e.message}") }
+        handyList.postDelayed({ loadHandyVoices() }, 1200)
+
+        val rateLabel = text("", 13f, C.GREY).apply { setPadding(0, dp(14), 0, dp(2)) }
+        fun showRate() { rateLabel.text = "Sprechtempo · " + "%.2f×".format(p.speechRate).replace('.', ',') }
+        showRate()
+        voice.addView(rateLabel)
+        voice.addView(SeekBar(this).apply {
+            max = 18
+            progress = ((p.speechRate - 0.7f) / 0.05f).toInt().coerceIn(0, 18)
+            progressTintList = android.content.res.ColorStateList.valueOf(C.CLAY)
+            thumbTintList = android.content.res.ColorStateList.valueOf(C.CLAY)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) { if (fromUser) { p.speechRate = 0.7f + v * 0.05f; showRate() } }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }, LinearLayout.LayoutParams(-1, dp(36)))
+        voice.addView(pill("Probe hören", dark = true) { Hub.speaker.stop(); Hub.speaker.speak("Hallo Mouna, so klinge ich.") },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        showVoice()
+
+        // Spracherkennung
+        val stt = section(col, "Spracherkennung", padded = false)
+        val kRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12)); minimumHeight = dp(56)
+        }
+        val kCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        kCol.addView(text("ElevenLabs-Schlüssel", 16f))
+        val kState = text("", 13f)
+        fun showKey() {
+            kState.text = if (p.elevenKey.isBlank()) "fehlt" else "gespeichert"
+            kState.setTextColor(if (p.elevenKey.isBlank()) C.CLAY else C.GREEN)
+        }
+        showKey()
+        kCol.addView(kState)
+        kRow.addView(kCol, LinearLayout.LayoutParams(0, -2, 1f))
+        kRow.addView(pill("Ändern") {
+            val input = field("", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply { hint = "Schlüssel einfügen" }
+            AlertDialog.Builder(this).setTitle("ElevenLabs-Schlüssel")
+                .setView(LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(input, LinearLayout.LayoutParams(-1, -2)) })
+                .setPositiveButton("Speichern") { _, _ ->
+                    if (input.text.isNotBlank()) { p.elevenKey = input.text.toString(); Hub.speaker.elevenBlocked = false; showKey() }
                 }
-            }
+                .setNegativeButton("Abbrechen", null).show()
         })
-        elevenList.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, pos: Int, id: Long) {
-                if (elevenList.tag == null) return
-                val vid = elevenIds.getOrNull(pos) ?: return
-                show("Teste Stimme …")
-                Hub.io.execute {
-                    val err = Hub.speaker.previewEleven(vid)
-                    if (err == null) {
-                        p.elevenVoice = vid; Hub.speaker.elevenBlocked = false
-                        show("Stimme gespeichert – geht mit deinem Konto.")
-                    } else show("Diese Stimme geht nicht: $err. Bitte eine andere wählen.")
-                }
-            }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        stt.addView(kRow)
+        stt.addView(View(this).apply { setBackgroundColor(C.DIVIDER) }, LinearLayout.LayoutParams(-1, dp(1)))
+        switchRow(stt, "Auto- oder Headset-Mikrofon", "über Bluetooth, wenn verbunden", p.carMic, false) { p.carMic = it }
+
+        // Erweitert
+        val more = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        col.addView(text("Erweitert · Berechtigungen, Byte-Reihenfolge  ▾", 14f, C.GREY).apply {
+            minHeight = dp(44); gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(16), 0, 0)
+            setOnClickListener { more.visibility = if (more.visibility == View.GONE) View.VISIBLE else View.GONE }
+        })
+        val adv = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(C.WHITE, 16, C.BORDER, 1)
         }
-        col.addView(label("Sprechtempo (1,0 = normal)"))
-        val rate = EditText(this).apply {
-            setText(p.speechRate.toString().replace('.', ','))
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-        }
-        col.addView(rate)
-        col.addView(Button(this).apply {
-            text = "Speichern"
-            setOnClickListener {
-                p.relayUrl = relay.text.toString()
-                if (key.text.isNotBlank()) { p.elevenKey = key.text.toString(); key.setText(""); key.hint = "gespeichert" }
-                p.swapBytes = swap.isChecked
-                p.carMic = carMic.isChecked
-                p.naturalVoice = natural.isChecked
-                Hub.speaker.elevenBlocked = false
-                rate.text.toString().replace(',', '.').toFloatOrNull()?.let { p.speechRate = it }
-                show("Gespeichert.")
-            }
+        switchRow(adv, "Byte-Reihenfolge tauschen", "nur falls die Erkennung Unsinn liefert", p.swapBytes, true) { p.swapBytes = it }
+        adv.addView(pill("Berechtigungen erlauben") {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS), 1)
+        }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(16), dp(12), dp(16), dp(16)) })
+        more.addView(adv)
+        col.addView(more, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(C.IVORY)
+            addView(col, ViewGroup.LayoutParams(-1, -2))
         })
-        col.addView(Button(this).apply {
-            text = "Berechtigungen erlauben"
-            setOnClickListener {
-                requestPermissions(arrayOf(
-                    Manifest.permission.RECORD_AUDIO,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.POST_NOTIFICATIONS,
-                ), 1)
-            }
-        })
-        col.addView(Button(this).apply { text = "Mit Mac koppeln"; setOnClickListener { pair() } })
-        col.addView(Button(this).apply { text = "Verbindung testen"; setOnClickListener { test() } })
-        col.addView(Button(this).apply { text = "Vorlesen testen"; setOnClickListener { Hub.speaker.speak("Hallo Mouna, die Sprachausgabe funktioniert.") } })
-        info = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
-        col.addView(info)
-        setContentView(ScrollView(this).apply { addView(col, ViewGroup.LayoutParams(-1, -2)) })
-        show(if (p.deviceToken.isBlank()) "Noch nicht gekoppelt." else "Gekoppelt. Im Auto unter den Musik-Apps „Claude Auto“ öffnen.")
+        if (p.deviceToken.isBlank()) showConn(C.BORDER2, "Noch nicht gekoppelt", null) else test()
     }
 
-    private fun show(t: String) = runOnUiThread { info.text = t }
+    override fun onPause() {
+        Hub.prefs.relayUrl = relay.text.toString()
+        super.onPause()
+    }
+
+    override fun onBackPressed() { openTalk() }
+
+    private fun openTalk() {
+        startActivity(Intent(this, TalkActivity::class.java))
+        finish()
+    }
+
+    // ---------- Bausteine ----------
+
+    private fun field(value: String, type: Int) = EditText(this).apply {
+        setText(value)
+        inputType = type
+        textSize = 15f
+        setTextColor(C.SLATE)
+        background = rounded(C.IVORY, 10, C.BORDER, 1)
+        setPadding(dp(12), 0, dp(12), 0)
+        minHeight = dp(44)
+        isSingleLine = true
+    }
+
+    private fun segment(label: String) = TextView(this).apply {
+        text = label; textSize = 14f; gravity = Gravity.CENTER
+    }
+
+    private fun styleSegment(t: TextView) {
+        t.background = if (t.isSelected) rounded(C.WHITE, 9) else null
+        t.elevation = if (t.isSelected) dp(1).toFloat() else 0f
+        t.setTextColor(if (t.isSelected) C.SLATE else C.GREY)
+        t.typeface = if (t.isSelected) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+    }
+
+    private fun styledSpinner() = Spinner(this).apply { background = rounded(C.IVORY, 10, C.BORDER, 1) }
+
+    private fun adapter(items: List<String>) = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, items)
+
+    private fun spinner(items: List<String>, selected: Int, pick: (Int) -> Unit) = styledSpinner().apply {
+        adapter = this@MainActivity.adapter(items)
+        setSelection(selected)
+        onItemSelectedListener = onPick(pick)
+    }
+
+    private fun onPick(f: (Int) -> Unit) = object : AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) = f(pos)
+        override fun onNothingSelected(parent: AdapterView<*>?) {}
+    }
+
+    private fun toast(t: String) = runOnUiThread { Toast.makeText(this, t, Toast.LENGTH_LONG).show() }
+
+    private fun showConn(dot: Int, title: String, info: String?) = runOnUiThread {
+        connDot.background = oval(dot)
+        connTitle.text = title
+        connInfo.text = info ?: ""
+        connInfo.visibility = if (info.isNullOrBlank()) View.GONE else View.VISIBLE
+    }
+
+    // ---------- Verbindung ----------
 
     private fun pair() {
-        show("Fordere Code an …")
+        Hub.prefs.relayUrl = relay.text.toString()
+        showConn(C.CLAY_LIGHT, "Fordere Code an …", null)
         Hub.io.execute {
             try {
                 val (code, secret) = Hub.relay.pairStart(Build.MODEL ?: "Handy")
-                show("Kopplungscode: $code\n\nSag Claude auf dem Mac: „Koppel Code $code“. Die App wartet bis zu 10 Minuten.")
+                showConn(C.CLAY_LIGHT, "Kopplungscode: $code", "Sag Claude auf dem Mac: „Koppel Code $code“. Die App wartet bis zu 10 Minuten.")
                 val until = System.currentTimeMillis() + 10 * 60_000
                 while (System.currentTimeMillis() < until) {
                     Thread.sleep(3000)
                     val token = Hub.relay.pairStatus(secret) ?: continue
                     Hub.prefs.deviceToken = token
-                    show("Gekoppelt. Im Auto unter den Musik-Apps „Claude Auto“ öffnen.")
+                    test()
                     return@execute
                 }
-                show("Code abgelaufen. Bitte nochmal koppeln.")
+                showConn(C.CLAY, "Code abgelaufen", "Bitte nochmal koppeln.")
             } catch (e: Exception) {
-                show("Kopplung fehlgeschlagen: ${e.message}")
+                showConn(C.CLAY, "Kopplung fehlgeschlagen", e.message)
             }
         }
     }
 
     private fun test() {
-        show("Teste …")
+        Hub.prefs.relayUrl = relay.text.toString()
+        showConn(C.BORDER2, "Prüfe …", null)
         Hub.io.execute {
             try {
                 val s = Hub.relay.status()
-                show(if (s.macOnline) "Verbunden. ${s.sessions.size} Sitzungen auf dem Mac." else "Relay erreichbar, aber der Mac ist offline.")
+                if (s.macOnline) showConn(C.GREEN, "Gekoppelt · Mac online", "${s.sessions.size} Sitzungen offen")
+                else showConn(C.CLAY_LIGHT, "Gekoppelt · Mac offline", "Der Mac schläft oder der Vermittler läuft nicht.")
             } catch (e: HttpException) {
-                show(if (e.code == 401) "Relay erreichbar, aber nicht gekoppelt." else "Fehler ${e.code}: ${e.message}")
+                showConn(C.CLAY, if (e.code == 401) "Nicht gekoppelt" else "Fehler ${e.code}", if (e.code == 401) null else e.message)
             } catch (e: Exception) {
-                show("Keine Verbindung: ${e.message}")
+                showConn(C.CLAY, "Keine Verbindung", e.message)
             }
         }
     }

@@ -91,6 +91,8 @@ class PhoneRecorder(
     @Volatile private var stopRequested = false
     /** Ob überhaupt gesprochen wurde – im Gespräch endet es, wenn Mouna nichts mehr sagt. */
     @Volatile var heardSpeech = false; private set
+    /** Aktuelle Lautstärke (RMS) für die Pegelanzeige. */
+    @Volatile var level = 0.0; private set
     /** Welches Mikrofon zuletzt benutzt wurde, fürs Fehlerprotokoll. */
     var micName = "Handy"; private set
 
@@ -117,7 +119,8 @@ class PhoneRecorder(
                 if (n == 0) continue
                 if (swapBytes) for (i in 0 until n - 1 step 2) { val t = buf[i]; buf[i] = buf[i + 1]; buf[i + 1] = t }
                 out.write(buf, 0, n)
-                if (rms(buf, n) > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
+                level = rms(buf, n)
+                if (level > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
                 val total = out.size()
                 if (stopOnPause && heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
                 if (!heardSpeech && total > bytesPerSecond * noSpeechSeconds) break

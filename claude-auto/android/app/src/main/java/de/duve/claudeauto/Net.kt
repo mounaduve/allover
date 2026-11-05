@@ -50,6 +50,14 @@ class Prefs(context: Context) {
     var autoSend: Boolean
         get() = p.getBoolean("auto_send", true)
         set(v) = p.edit().putBoolean("auto_send", v).apply()
+    /** Gespräch am Handy: nach der vorgelesenen Antwort von selbst wieder zuhören. */
+    var autoListen: Boolean
+        get() = p.getBoolean("auto_listen", true)
+        set(v) = p.edit().putBoolean("auto_listen", v).apply()
+    /** So viele Sekunden Stille beenden das Gespräch. */
+    var silenceSeconds: Int
+        get() = p.getInt("silence_seconds", 8)
+        set(v) = p.edit().putInt("silence_seconds", v).apply()
     /** Zuletzt im Gespräch gewählte Sitzung. */
     var talkSession: String
         get() = p.getString("talk_session", "")!!
