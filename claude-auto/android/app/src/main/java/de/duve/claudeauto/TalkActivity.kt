@@ -57,6 +57,7 @@ class TalkActivity : Activity() {
     private var lastClaudeLabel: TextView? = null
     private var lastSentLabel: TextView? = null
     private var shownReplyId = 0L
+    private var lastReplay: View? = null
 
     private val tones by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
     private val listener = { updateUi() }
@@ -360,8 +361,31 @@ class TalkActivity : Activity() {
         box.addView(text(shown, 18f, C.TEXT2, serif = true).apply {
             setLineSpacing(0f, 1.3f); setTextIsSelectable(true); setPadding(0, dp(6), dp(24), 0)
         })
+        // „Nochmal anhören“ an der jeweils letzten Antwort – z. B. nach dem Wechsel aus einer anderen Sitzung
+        lastReplay?.visibility = View.GONE
+        val replay = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(44)
+            setPadding(dp(12), 0, dp(16), 0)
+            pressable(rounded(C.IVORY, 22, C.BORDER2, 1))
+            contentDescription = "Antwort nochmal anhören"
+            setOnClickListener { replay(t) }
+        }
+        replay.addView(icon(R.drawable.ui_play, C.CLAY, 16))
+        replay.addView(text("Nochmal anhören", 14f, C.CLAY).apply { setPadding(dp(8), 0, 0, 0) })
+        box.addView(replay, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        lastReplay = replay
         lastClaudeLabel = label
         addMessage(box)
+    }
+
+    /** Antwort erneut vorlesen; eine laufende Aufnahme wird dafür abgebrochen. */
+    private fun replay(t: String) {
+        if (state == State.LISTENING || state == State.RECOGNIZING) { turn++; recorder?.stop() }
+        if (state != State.WAITING) state = State.IDLE
+        Hub.speaker.stop()
+        Hub.speaker.speak(t)
+        updateUi()
     }
 
     private fun addMine(t: String) {
