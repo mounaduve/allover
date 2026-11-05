@@ -186,7 +186,9 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
 
     /** Google (kostenlos) oder ElevenLabs, je nach Einstellung. */
     fun transcribe(pcm16k: ByteArray): String =
-        if (prefs.sttEngine == "eleven") eleven(pcm16k) else google.transcribe(pcm16k)
+        if (prefs.sttEngine == "eleven") eleven(pcm16k)
+        // Die Google-Erkennung liefert beim ersten Mal nach dem Start manchmal leeren Text – dann einmal wiederholen
+        else google.transcribe(pcm16k).ifBlank { Hub.log("Google-Erkennung leer, zweiter Versuch"); google.transcribe(pcm16k) }
 
     private fun eleven(pcm16k: ByteArray): String {
         if (prefs.elevenKey.isBlank()) throw HttpException(0, "ElevenLabs-Schlüssel fehlt (am Handy eintragen)")
