@@ -50,6 +50,9 @@ object Hub {
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
     fun anyWaiting() = waiting.isNotEmpty()
 
+    /** Sitzung, deren Antwort gerade gekommen ist – der Auto-Player springt auf sie, damit Mouna dort direkt antworten kann. */
+    @Volatile var replyFocus: String? = null
+
     fun addListener(l: () -> Unit) { listeners += l }
     fun removeListener(l: () -> Unit) { listeners -= l }
     fun changed() = main.post { listeners.toList().forEach { it() } }
@@ -80,6 +83,7 @@ object Hub {
                     errors = 0
                     lastReply[sessionId] = r
                     got = r
+                    replyFocus = sessionId
                     main.post { speaker.speak(r.text, onSpoken) } // Mouna will direkt die Antwort hören, ohne Vorspann
                     break
                 }

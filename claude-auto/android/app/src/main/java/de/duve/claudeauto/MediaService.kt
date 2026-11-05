@@ -38,7 +38,14 @@ class MediaService : MediaBrowserServiceCompat() {
     private var recognized = ""
     private var recorder: PhoneRecorder? = null
     private var foreground = false
-    private val listener = { updateState() }
+    private val listener = {
+        // Die Sitzung, die sich gerade mit einer Antwort meldet, wird im Player die aktive
+        Hub.replyFocus?.let { id ->
+            Hub.replyFocus = null
+            if (phase == Phase.IDLE) sessions.firstOrNull { it.id == id }?.let { current = it }
+        }
+        updateState()
+    }
     private val refresher = object : Runnable {
         override fun run() { refreshSessions(); main.postDelayed(this, 20_000) }
     }
