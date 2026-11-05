@@ -276,7 +276,7 @@ class TalkActivity : Activity() {
             )
             Hub.relay.send(s.id, text)
             Hub.lastSent[s.id] = text
-            ui(t) { lastSentLabel?.text = "gesendet" }
+            ui(t) { lastSentLabel?.text = "Gesendet · Claude arbeitet …" }
             val ok = Hub.awaitReply(s.id, s.name, after,
                 onReply = { r ->
                     if (t == turn) {
@@ -332,30 +332,25 @@ class TalkActivity : Activity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val label = text(if (reading) "Claude · liest vor" else "Claude", 12f, C.LABEL, bold = true).apply { letterSpacing = 0.02f }
         box.addView(label)
-        box.addView(text(t.replace(Regex("[*`#]+"), "").trim(), 18f, C.TEXT2, serif = true).apply {
+        // Zitierte Frage („> Aus dem Auto: …“) nicht anzeigen – Mouna will nur die Antwort sehen
+        val shown = t.replace(Regex("(?m)^>\\s*Aus dem Auto:[^\\n]*\\n*"), "").replace(Regex("[*`#]+"), "").trim()
+        box.addView(text(shown, 18f, C.TEXT2, serif = true).apply {
             setLineSpacing(0f, 1.3f); setTextIsSelectable(true); setPadding(0, dp(6), dp(24), 0)
         })
         lastClaudeLabel = label
         addMessage(box)
     }
 
-    private fun addMine(t: String) {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
-        box.addView(text(t, 16f).apply {
-            background = GradientDrawable_bubble()
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            setLineSpacing(0f, 1.2f)
-        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(56) })
-        val sent = text("wird gesendet …", 12f, C.GREY).apply { setPadding(0, dp(4), dp(4), 0) }
-        box.addView(sent)
-        lastSentLabel = sent
-        addMessage(box)
+    /** Mouna will ihren eigenen Satz nicht im Verlauf sehen – nur einen Hinweis, dass Claude arbeitet. */
+    private fun addMine(@Suppress("UNUSED_PARAMETER") t: String) {
         // „Claude arbeitet …“ bis die Antwort da ist
         val w = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         listOf(C.CLAY_LIGHT, 0xFFE8B4A0.toInt(), 0xFFF2D6CB.toInt()).forEach { c ->
             w.addView(View(this).apply { background = oval(c) }, LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) })
         }
-        w.addView(text("Claude arbeitet …", 14f, C.GREY).apply { setPadding(dp(5), 0, 0, 0) })
+        val label = text("Wird gesendet …", 14f, C.GREY).apply { setPadding(dp(5), 0, 0, 0) }
+        w.addView(label)
+        lastSentLabel = label
         working = w
         addMessage(w)
     }
