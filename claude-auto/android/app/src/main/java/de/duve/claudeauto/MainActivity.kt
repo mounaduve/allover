@@ -64,14 +64,20 @@ class MainActivity : Activity() {
         val talk = section(col, "Gespräch", padded = false)
         switchRow(talk, "Bei Sprechpause senden", "Aus: Senden nur per Tipp", p.autoSend, true) { p.autoSend = it }
         switchRow(talk, "Nach der Antwort weiter zuhören", "Piep, dann direkt antworten", p.autoListen, true) { p.autoListen = it }
-        val silence = listOf(5, 8, 15)
-        val sRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(10), dp(12), dp(10)); minimumHeight = dp(56)
+        // Mouna will kurze Zeiten: 1, 2 oder höchstens 5 Sekunden
+        val secs = listOf(1, 2, 5)
+        fun timeRow(label: String, value: Int, divider: Boolean, save: (Int) -> Unit) {
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(10), dp(12), dp(10)); minimumHeight = dp(56)
+            }
+            r.addView(text(label, 16f), LinearLayout.LayoutParams(0, -2, 1f))
+            r.addView(spinner(secs.map { "$it s" }, secs.indexOf(value).coerceAtLeast(0)) { save(secs[it]) })
+            talk.addView(r)
+            if (divider) talk.addView(View(this).apply { setBackgroundColor(C.DIVIDER) }, LinearLayout.LayoutParams(-1, dp(1)))
         }
-        sRow.addView(text("Gespräch endet nach Stille von", 16f), LinearLayout.LayoutParams(0, -2, 1f))
-        sRow.addView(spinner(silence.map { "$it s" }, silence.indexOf(p.silenceSeconds).coerceAtLeast(1)) { p.silenceSeconds = silence[it] })
-        talk.addView(sRow)
+        timeRow("Sprechpause bis Senden", p.sendPauseSeconds, true) { p.sendPauseSeconds = it }
+        timeRow("Gespräch endet nach Stille von", p.silenceSeconds, false) { p.silenceSeconds = it }
 
         // Stimme
         val voice = section(col, "Stimme")

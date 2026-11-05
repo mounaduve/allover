@@ -250,7 +250,8 @@ class TalkActivity : Activity() {
         // Erst nach dem Ton aufnehmen, damit er nicht mit drauf ist
         main.postDelayed({
             if (t != turn) return@postDelayed
-            val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = Hub.prefs.autoSend, noSpeechSeconds = Hub.prefs.silenceSeconds)
+            val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = Hub.prefs.autoSend, noSpeechSeconds = Hub.prefs.silenceSeconds,
+                pauseSeconds = Hub.prefs.sendPauseSeconds.toDouble())
             recorder = rec
             Hub.io.execute { record(rec, s, t) }
         }, 250)

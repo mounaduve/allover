@@ -87,6 +87,7 @@ class PhoneRecorder(
     private val swapBytes: Boolean,
     private val stopOnPause: Boolean = true,
     private val noSpeechSeconds: Int = Recorder.NO_SPEECH_SECONDS,
+    private val pauseSeconds: Double = Recorder.PAUSE_SECONDS,
 ) {
     @Volatile private var stopRequested = false
     /** Ob überhaupt gesprochen wurde – im Gespräch endet es, wenn Mouna nichts mehr sagt. */
@@ -122,7 +123,7 @@ class PhoneRecorder(
                 level = rms(buf, n)
                 if (level > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
                 val total = out.size()
-                if (stopOnPause && heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
+                if (stopOnPause && heardSpeech && silentBytes > bytesPerSecond * pauseSeconds) break
                 if (!heardSpeech && total > bytesPerSecond * noSpeechSeconds) break
                 if (total > bytesPerSecond * Recorder.MAX_SECONDS) break
             }

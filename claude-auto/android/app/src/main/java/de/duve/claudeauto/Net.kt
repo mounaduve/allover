@@ -56,8 +56,12 @@ class Prefs(context: Context) {
         set(v) = p.edit().putBoolean("auto_listen", v).apply()
     /** So viele Sekunden Stille beenden das Gespräch. */
     var silenceSeconds: Int
-        get() = p.getInt("silence_seconds", 8)
-        set(v) = p.edit().putInt("silence_seconds", v).apply()
+        get() = p.getInt("silence_seconds_v2", 5)
+        set(v) = p.edit().putInt("silence_seconds_v2", v).apply()
+    /** So viele Sekunden Sprechpause schicken die Nachricht ab. */
+    var sendPauseSeconds: Int
+        get() = p.getInt("send_pause_seconds", 2)
+        set(v) = p.edit().putInt("send_pause_seconds", v).apply()
     /** Zuletzt im Gespräch gewählte Sitzung. */
     var talkSession: String
         get() = p.getString("talk_session", "")!!
