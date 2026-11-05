@@ -56,6 +56,7 @@ class TalkActivity : Activity() {
     private var working: View? = null
     private var lastClaudeLabel: TextView? = null
     private var lastSentLabel: TextView? = null
+    private var shownReplyId = 0L
 
     private val tones by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 90) }
     private val listener = { updateUi() }
@@ -170,7 +171,21 @@ class TalkActivity : Activity() {
         updateUi()
     }
 
-    override fun onResume() { super.onResume(); main.post(ticker); if (sessions.isEmpty()) loadSessions() }
+    override fun onResume() {
+        super.onResume()
+        main.post(ticker)
+        if (sessions.isEmpty()) loadSessions() else catchUp()
+    }
+
+    /** Antwort nachholen, die kam, während die App im Hintergrund war oder Android sie angehalten hat. */
+    private fun catchUp() {
+        val s = current ?: return
+        if (Hub.isWaiting(s.id) || state != State.IDLE) return
+        Hub.io.execute {
+            val r = runCatching { Hub.relay.waitReply(s.id, 0, wait = 0) }.getOrNull() ?: return@execute
+            runOnUiThread { if (current?.id == s.id && r.id > shownReplyId) { Hub.lastReply[s.id] = r; addClaude(r.text, id = r.id) } }
+        }
+    }
     override fun onPause() { main.removeCallbacks(ticker); super.onPause() }
 
     override fun onDestroy() {
@@ -215,7 +230,7 @@ class TalkActivity : Activity() {
     }
 
     private fun select(s: ChatSession) {
-        if (s.id != current?.id) { stopAll(); messages.removeAllViews(); working = null }
+        if (s.id != current?.id) { stopAll(); messages.removeAllViews(); working = null; shownReplyId = 0 }
         current = s
         Hub.prefs.talkSession = s.id
         note = ""
@@ -224,7 +239,7 @@ class TalkActivity : Activity() {
         Hub.io.execute {
             val r = runCatching { Hub.relay.waitReply(s.id, 0, wait = 0) }.getOrNull() ?: return@execute
             Hub.lastReply[s.id] = r
-            runOnUiThread { if (current?.id == s.id && messages.childCount == 0) addClaude(r.text) }
+            runOnUiThread { if (current?.id == s.id && messages.childCount == 0) addClaude(r.text, id = r.id) }
         }
     }
 
@@ -276,12 +291,13 @@ class TalkActivity : Activity() {
             )
             Hub.relay.send(s.id, text)
             Hub.lastSent[s.id] = text
+            keepAlive()
             ui(t) { lastSentLabel?.text = "gesendet" }
             val ok = Hub.awaitReply(s.id, s.name, after,
                 onReply = { r ->
                     if (t == turn) {
                         if (r == null) pauseTalk("Keine Antwort gekommen.")
-                        else { addClaude(r.text, reading = true); state = State.SPEAKING; updateUi() }
+                        else { addClaude(r.text, reading = true, id = r.id); state = State.SPEAKING; updateUi() }
                     }
                 },
                 onSpoken = {
@@ -298,6 +314,12 @@ class TalkActivity : Activity() {
             Hub.log("Senden fehlgeschlagen: $e")
             ui(t) { lastSentLabel?.text = "nicht gesendet"; pauseTalk("Senden fehlgeschlagen: ${e.message}") }
         }
+    }
+
+    /** Hält die App per Vordergrunddienst wach, solange auf die Antwort gewartet wird (auch wenn Mouna die App verlässt). */
+    private fun keepAlive() = runOnUiThread {
+        try { startForegroundService(Intent(this, MediaService::class.java).setAction(MediaService.ACTION_KEEP_ALIVE)) }
+        catch (e: Exception) { Hub.log("Wachhalten nicht möglich: $e") }
     }
 
     /** Gespräch anhalten, ohne laufendes Vorlesen abzubrechen. */
@@ -327,8 +349,9 @@ class TalkActivity : Activity() {
 
     // ---------- Verlauf ----------
 
-    private fun addClaude(t: String, reading: Boolean = false) {
+    private fun addClaude(t: String, reading: Boolean = false, id: Long = 0) {
         removeWorking()
+        if (id > shownReplyId) shownReplyId = id
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val label = text(if (reading) "Claude · liest vor" else "Claude", 12f, C.LABEL, bold = true).apply { letterSpacing = 0.02f }
         box.addView(label)

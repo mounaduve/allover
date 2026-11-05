@@ -58,10 +58,25 @@ class MediaService : MediaBrowserServiceCompat() {
 
     override fun onDestroy() {
         main.removeCallbacks(refresher)
+        main.removeCallbacks(releaser)
         Hub.removeListener(listener)
         recorder?.stop()
         session.release()
         super.onDestroy()
+    }
+
+    /** Vom Gespräch am Handy: Dienst in den Vordergrund holen, damit das Warten auf die Antwort im Hintergrund weiterläuft. */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_KEEP_ALIVE) { goForeground(); main.removeCallbacks(releaser); main.postDelayed(releaser, 5_000) }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    /** Gibt den Vordergrund wieder frei, sobald nichts mehr wartet oder vorgelesen wird. */
+    private val releaser = object : Runnable {
+        override fun run() {
+            if (Hub.anyWaiting() || Hub.speaker.speaking || phase != Phase.IDLE) main.postDelayed(this, 5_000)
+            else stopForegroundIfIdle(force = false)
+        }
     }
 
     // ---------- Liste ----------
@@ -397,5 +412,6 @@ class MediaService : MediaBrowserServiceCompat() {
         const val ACTION_DONE = "done"
         const val ACTION_SEND = "send"
         const val ACTION_CANCEL = "cancel"
+        const val ACTION_KEEP_ALIVE = "de.duve.claudeauto.KEEP_ALIVE"
     }
 }

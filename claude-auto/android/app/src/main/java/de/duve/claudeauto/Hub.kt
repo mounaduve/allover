@@ -48,6 +48,7 @@ object Hub {
     }
 
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
+    fun anyWaiting() = waiting.isNotEmpty()
 
     fun addListener(l: () -> Unit) { listeners += l }
     fun removeListener(l: () -> Unit) { listeners -= l }
@@ -71,10 +72,12 @@ object Hub {
             try {
                 while (System.currentTimeMillis() < until) {
                     val r = try { relay.waitReply(sessionId, after) } catch (e: Exception) {
+                        // Im Hintergrund drosselt Android das Netz – nicht aufgeben, sondern mit wachsendem Abstand
+                        // weiter versuchen, bis die 20 Minuten um sind. Die Antwort liegt ja sicher auf dem Relay.
                         log("Antwort abholen fehlgeschlagen: $e")
-                        if (++errors > 5) { main.post { speaker.speak("Verbindung zum Relay verloren.") }; break }
-                        Thread.sleep(3000); null
+                        Thread.sleep(minOf(30_000L, 3_000L * ++errors)); null
                     } ?: continue
+                    errors = 0
                     lastReply[sessionId] = r
                     got = r
                     main.post { speaker.speak(r.text, onSpoken) } // Mouna will direkt die Antwort hören, ohne Vorspann
