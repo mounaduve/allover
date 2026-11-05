@@ -276,7 +276,7 @@ class TalkActivity : Activity() {
             )
             Hub.relay.send(s.id, text)
             Hub.lastSent[s.id] = text
-            ui(t) { lastSentLabel?.text = "Gesendet · Claude arbeitet …" }
+            ui(t) { lastSentLabel?.text = "gesendet" }
             val ok = Hub.awaitReply(s.id, s.name, after,
                 onReply = { r ->
                     if (t == turn) {
@@ -341,16 +341,23 @@ class TalkActivity : Activity() {
         addMessage(box)
     }
 
-    /** Mouna will ihren eigenen Satz nicht im Verlauf sehen – nur einen Hinweis, dass Claude arbeitet. */
-    private fun addMine(@Suppress("UNUSED_PARAMETER") t: String) {
+    private fun addMine(t: String) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
+        box.addView(text(t, 16f).apply {
+            background = GradientDrawable_bubble()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setLineSpacing(0f, 1.2f)
+        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(56) })
+        val sent = text("wird gesendet …", 12f, C.GREY).apply { setPadding(0, dp(4), dp(4), 0) }
+        box.addView(sent)
+        lastSentLabel = sent
+        addMessage(box)
         // „Claude arbeitet …“ bis die Antwort da ist
         val w = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         listOf(C.CLAY_LIGHT, 0xFFE8B4A0.toInt(), 0xFFF2D6CB.toInt()).forEach { c ->
             w.addView(View(this).apply { background = oval(c) }, LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) })
         }
-        val label = text("Wird gesendet …", 14f, C.GREY).apply { setPadding(dp(5), 0, 0, 0) }
-        w.addView(label)
-        lastSentLabel = label
+        w.addView(text("Claude arbeitet …", 14f, C.GREY).apply { setPadding(dp(5), 0, 0, 0) })
         working = w
         addMessage(w)
     }
