@@ -26,6 +26,10 @@ class MainActivity : Activity() {
         fun label(t: String) = TextView(this).apply { text = t; textSize = 15f; setPadding(0, pad, 0, 0) }
 
         col.addView(TextView(this).apply { text = "Claude Auto"; textSize = 24f })
+        col.addView(Button(this).apply {
+            text = "Gespräch am Handy"
+            setOnClickListener { startActivity(android.content.Intent(this@MainActivity, TalkActivity::class.java)) }
+        })
         col.addView(label("Relay-Adresse"))
         val relay = EditText(this).apply { setText(p.relayUrl); inputType = InputType.TYPE_TEXT_VARIATION_URI }
         col.addView(relay)

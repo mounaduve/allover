@@ -82,8 +82,15 @@ class Recorder(private val carContext: CarContext, private val swapBytes: Boolea
  * Nimmt über das Handy auf – im Auto bevorzugt über das Automikrofon der Bluetooth-Freisprechverbindung.
  * Läuft in der Musik-App, die als Vordergrunddienst mit Mikrofon-Typ gestartet ist.
  */
-class PhoneRecorder(private val context: Context, private val swapBytes: Boolean, private val stopOnPause: Boolean = true) {
+class PhoneRecorder(
+    private val context: Context,
+    private val swapBytes: Boolean,
+    private val stopOnPause: Boolean = true,
+    private val noSpeechSeconds: Int = Recorder.NO_SPEECH_SECONDS,
+) {
     @Volatile private var stopRequested = false
+    /** Ob überhaupt gesprochen wurde – im Gespräch endet es, wenn Mouna nichts mehr sagt. */
+    @Volatile var heardSpeech = false; private set
     /** Welches Mikrofon zuletzt benutzt wurde, fürs Fehlerprotokoll. */
     var micName = "Handy"; private set
 
@@ -103,7 +110,6 @@ class PhoneRecorder(private val context: Context, private val swapBytes: Boolean
             rec.startRecording()
             val buf = ByteArray(3200) // 100 ms
             val bytesPerSecond = RATE * 2
-            var heardSpeech = false
             var silentBytes = 0
             while (!stopRequested) {
                 val n = rec.read(buf, 0, buf.size)
@@ -114,7 +120,7 @@ class PhoneRecorder(private val context: Context, private val swapBytes: Boolean
                 if (rms(buf, n) > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
                 val total = out.size()
                 if (stopOnPause && heardSpeech && silentBytes > bytesPerSecond * Recorder.PAUSE_SECONDS) break
-                if (!heardSpeech && total > bytesPerSecond * Recorder.NO_SPEECH_SECONDS) break
+                if (!heardSpeech && total > bytesPerSecond * noSpeechSeconds) break
                 if (total > bytesPerSecond * Recorder.MAX_SECONDS) break
             }
         } finally {

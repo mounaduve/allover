@@ -46,6 +46,15 @@ class Prefs(context: Context) {
         get() = p.getFloat("speech_rate", 1.15f)
         set(v) = p.edit().putFloat("speech_rate", v.coerceIn(0.5f, 2.5f)).apply()
 
+    /** Gespräch am Handy: Aufnahme endet von selbst nach einer Sprechpause (sonst per Tipp). */
+    var autoSend: Boolean
+        get() = p.getBoolean("auto_send", true)
+        set(v) = p.edit().putBoolean("auto_send", v).apply()
+    /** Zuletzt im Gespräch gewählte Sitzung. */
+    var talkSession: String
+        get() = p.getString("talk_session", "")!!
+        set(v) = p.edit().putString("talk_session", v).apply()
+
     companion object {
         const val DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"
         const val DEFAULT_RELAY = "https://molli-server.tail4e4456.ts.net/auto"

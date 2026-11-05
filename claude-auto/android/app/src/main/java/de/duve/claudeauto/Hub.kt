@@ -53,13 +53,21 @@ object Hub {
     fun removeListener(l: () -> Unit) { listeners -= l }
     fun changed() = main.post { listeners.toList().forEach { it() } }
 
-    /** Wartet bis zu 20 Minuten auf die nächste Antwort nach `after` und liest sie vor. */
-    fun awaitReply(sessionId: String, name: String, after: Long) {
-        if (waiting.put(sessionId, true) == true) return
+    /**
+     * Wartet bis zu 20 Minuten auf die nächste Antwort nach `after` und liest sie vor.
+     * `onReply` bekommt die Antwort (null = keine gekommen), `onSpoken` läuft, wenn fertig vorgelesen ist.
+     * false = für diese Sitzung wird schon gewartet.
+     */
+    fun awaitReply(
+        sessionId: String, name: String, after: Long,
+        onReply: ((Reply?) -> Unit)? = null, onSpoken: (() -> Unit)? = null,
+    ): Boolean {
+        if (waiting.put(sessionId, true) == true) return false
         changed()
         io.execute {
             val until = System.currentTimeMillis() + 20 * 60_000
             var errors = 0
+            var got: Reply? = null
             try {
                 while (System.currentTimeMillis() < until) {
                     val r = try { relay.waitReply(sessionId, after) } catch (e: Exception) {
@@ -68,13 +76,16 @@ object Hub {
                         Thread.sleep(3000); null
                     } ?: continue
                     lastReply[sessionId] = r
-                    main.post { speaker.speak(r.text) } // Mouna will direkt die Antwort hören, ohne Vorspann
+                    got = r
+                    main.post { speaker.speak(r.text, onSpoken) } // Mouna will direkt die Antwort hören, ohne Vorspann
                     break
                 }
             } finally {
                 waiting.remove(sessionId)
                 changed()
+                onReply?.let { cb -> main.post { cb(got) } }
             }
         }
+        return true
     }
 }

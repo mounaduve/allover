@@ -37,5 +37,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Gespräch am Handy: eigenes Symbol „Claude Gespräch“ auf dem Startbildschirm -->
+        <activity
+            android:name=".TalkActivity"
+            android:exported="true"
+            android:label="Claude Gespräch"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
