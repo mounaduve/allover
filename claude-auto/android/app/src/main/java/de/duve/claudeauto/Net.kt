@@ -187,8 +187,16 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
     /** Google (kostenlos) oder ElevenLabs, je nach Einstellung. */
     fun transcribe(pcm16k: ByteArray): String =
         if (prefs.sttEngine == "eleven") eleven(pcm16k)
-        // Die Google-Erkennung liefert beim ersten Mal nach dem Start manchmal leeren Text – dann einmal wiederholen
-        else google.transcribe(pcm16k).ifBlank { Hub.log("Google-Erkennung leer, zweiter Versuch"); google.transcribe(pcm16k) }
+        // Google lehnt lange Aufnahmen ab (Fehler 2 ab etwa 10 Sekunden) – darum in Stücke an leisen Stellen teilen
+        else GoogleStt.split(pcm16k).joinToString(" ") { googleChunk(it) }.trim()
+
+    /** Ein Stück erkennen; bei leerem Ergebnis oder Fehler einmal wiederholen, dann bevorzugt auf dem Gerät. */
+    private fun googleChunk(pcm: ByteArray): String {
+        val first = runCatching { google.transcribe(pcm) }
+        first.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        Hub.log("Google-Erkennung zweiter Versuch (${first.exceptionOrNull()?.message ?: "leer"})")
+        return google.transcribe(pcm, offline = true)
+    }
 
     private fun eleven(pcm16k: ByteArray): String {
         if (prefs.elevenKey.isBlank()) throw HttpException(0, "ElevenLabs-Schlüssel fehlt (am Handy eintragen)")

@@ -22,7 +22,7 @@ class GoogleStt(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
 
     /** Blockiert; im Hintergrund-Thread aufrufen. */
-    fun transcribe(pcm: ByteArray): String {
+    fun transcribe(pcm: ByteArray, offline: Boolean = false): String {
         val done = CountDownLatch(1)
         val parts = mutableListOf<String>()
         var error: Int? = null
@@ -56,6 +56,7 @@ class GoogleStt(private val context: Context) {
                 sr.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
+                    if (offline) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pipe[0])
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
@@ -85,6 +86,32 @@ class GoogleStt(private val context: Context) {
         if (!finished) throw HttpException(0, "Google-Erkennung: keine Antwort")
         error?.let { throw HttpException(it, "Google-Erkennung: Fehler $it") }
         return synchronized(parts) { parts.joinToString(" ") }.trim()
+    }
+
+    companion object {
+        private const val BYTES_PER_SECOND = PhoneRecorder.RATE * 2
+        private const val FRAME = 3200 // 100 ms
+
+        /** Teilt in Stücke von höchstens ~8 Sekunden, jeweils an der leisesten Stelle zwischen 5 und 8 Sekunden. */
+        fun split(pcm: ByteArray): List<ByteArray> {
+            val out = mutableListOf<ByteArray>()
+            var start = 0
+            while (pcm.size - start > 8 * BYTES_PER_SECOND) {
+                var cut = start + 8 * BYTES_PER_SECOND
+                var quietest = Double.MAX_VALUE
+                var pos = start + 5 * BYTES_PER_SECOND
+                while (pos + FRAME <= start + 8 * BYTES_PER_SECOND) {
+                    val level = rms(pcm.copyOfRange(pos, pos + FRAME), FRAME)
+                    if (level < quietest) { quietest = level; cut = pos + FRAME / 2 }
+                    pos += FRAME / 2
+                }
+                cut -= cut % 2
+                out += pcm.copyOfRange(start, cut)
+                start = cut
+            }
+            out += pcm.copyOfRange(start, pcm.size)
+            return out
+        }
     }
 
     private fun best(b: Bundle): String? =
