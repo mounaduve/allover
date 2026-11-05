@@ -188,14 +188,35 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
     fun transcribe(pcm16k: ByteArray): String =
         if (prefs.sttEngine == "eleven") eleven(pcm16k)
         // Google lehnt lange Aufnahmen ab (Fehler 2 ab etwa 10 Sekunden) – darum in Stücke an leisen Stellen teilen
-        else GoogleStt.split(pcm16k).joinToString(" ") { googleChunk(it) }.trim()
+        else google(pcm16k)
 
-    /** Ein Stück erkennen; bei leerem Ergebnis oder Fehler einmal wiederholen, dann bevorzugt auf dem Gerät. */
+    /** Stückweise erkennen; ein misslungenes Stück kostet nur dieses Stück, nicht die ganze Nachricht. */
+    private fun google(pcm16k: ByteArray): String {
+        val chunks = GoogleStt.split(pcm16k)
+        var lastError: Throwable? = null
+        val text = chunks.mapIndexed { i, c ->
+            runCatching { googleChunk(c) }.getOrElse {
+                lastError = it
+                Hub.log("Google-Erkennung Stück ${i + 1}/${chunks.size} übersprungen: ${it.message}")
+                ""
+            }
+        }.filter { it.isNotBlank() }.joinToString(" ").trim()
+        if (text.isBlank()) lastError?.let { throw it }
+        return text
+    }
+
+    /** Ein Stück erkennen; bis zu drei Versuche, der letzte bevorzugt auf dem Gerät. */
     private fun googleChunk(pcm: ByteArray): String {
-        val first = runCatching { google.transcribe(pcm) }
-        first.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
-        Hub.log("Google-Erkennung zweiter Versuch (${first.exceptionOrNull()?.message ?: "leer"})")
-        return google.transcribe(pcm, offline = true)
+        var last: Throwable? = null
+        for (attempt in 1..3) {
+            if (attempt > 1) Thread.sleep(400)
+            val r = runCatching { google.transcribe(pcm, offline = attempt == 3) }
+            r.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+            last = r.exceptionOrNull()
+            Hub.log("Google-Erkennung Versuch $attempt ${last?.message ?: "leer"}")
+        }
+        last?.let { throw it }
+        return ""
     }
 
     private fun eleven(pcm16k: ByteArray): String {

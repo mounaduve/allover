@@ -82,7 +82,10 @@ class GoogleStt(private val context: Context) {
         }
 
         val finished = done.await(90, TimeUnit.SECONDS)
-        main.post { runCatching { recognizer?.destroy() }; runCatching { pipe[0].close() } }
+        // Erst aufräumen lassen, bevor das nächste Stück startet – sonst meldet Google „belegt“ (Fehler 5/8/11)
+        val cleaned = CountDownLatch(1)
+        main.post { runCatching { recognizer?.destroy() }; runCatching { pipe[0].close() }; cleaned.countDown() }
+        cleaned.await(5, TimeUnit.SECONDS)
         if (!finished) throw HttpException(0, "Google-Erkennung: keine Antwort")
         error?.let { throw HttpException(it, "Google-Erkennung: Fehler $it") }
         return synchronized(parts) { parts.joinToString(" ") }.trim()
