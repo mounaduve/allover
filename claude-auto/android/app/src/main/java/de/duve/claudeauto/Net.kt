@@ -62,6 +62,10 @@ class Prefs(context: Context) {
     var sendPauseSeconds: Int
         get() = p.getInt("send_pause_seconds", 2)
         set(v) = p.edit().putInt("send_pause_seconds", v).apply()
+    /** Spracherkennung: "google" (kostenlos, auf dem Handy) oder "eleven" (ElevenLabs Scribe, verbraucht Credits). */
+    var sttEngine: String
+        get() = p.getString("stt_engine", "google")!!
+        set(v) = p.edit().putString("stt_engine", v).apply()
     /** Zuletzt im Gespräch gewählte Sitzung. */
     var talkSession: String
         get() = p.getString("talk_session", "")!!
@@ -177,8 +181,14 @@ fun loadElevenVoices(key: String): List<ElevenVoice> {
 }
 
 /** Spracherkennung über ElevenLabs Scribe. Die Aufnahme geht direkt vom Handy dorthin. */
-class Stt(private val prefs: Prefs) {
-    fun transcribe(pcm16k: ByteArray): String {
+class Stt(private val prefs: Prefs, context: android.content.Context) {
+    private val google = GoogleStt(context.applicationContext)
+
+    /** Google (kostenlos) oder ElevenLabs, je nach Einstellung. */
+    fun transcribe(pcm16k: ByteArray): String =
+        if (prefs.sttEngine == "eleven") eleven(pcm16k) else google.transcribe(pcm16k)
+
+    private fun eleven(pcm16k: ByteArray): String {
         if (prefs.elevenKey.isBlank()) throw HttpException(0, "ElevenLabs-Schlüssel fehlt (am Handy eintragen)")
         val boundary = "----claudeauto${System.currentTimeMillis()}"
         val out = ByteArrayOutputStream()

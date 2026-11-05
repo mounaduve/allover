@@ -30,7 +30,7 @@ object Hub {
         if (started) return
         prefs = Prefs(context.applicationContext)
         relay = Relay(prefs)
-        stt = Stt(prefs)
+        stt = Stt(prefs, context)
         speaker = Speaker(context.applicationContext)
         started = true
     }
