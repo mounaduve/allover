@@ -74,7 +74,7 @@ class Recorder(private val carContext: CarContext, private val swapBytes: Boolea
         const val SPEECH_RMS = 700.0
         const val PAUSE_SECONDS = 2.0
         const val NO_SPEECH_SECONDS = 10
-        const val MAX_SECONDS = 120
+        const val MAX_SECONDS = 300
     }
 }
 
@@ -96,6 +96,8 @@ class PhoneRecorder(
     @Volatile var level = 0.0; private set
     /** Welches Mikrofon zuletzt benutzt wurde, fürs Fehlerprotokoll. */
     var micName = "Handy"; private set
+    /** Bekommt jeden aufgenommenen Block, z. B. für die Erkennung schon während der Aufnahme. */
+    var onAudio: ((ByteArray, Int) -> Unit)? = null
 
     fun stop() { stopRequested = true }
 
@@ -120,6 +122,7 @@ class PhoneRecorder(
                 if (n == 0) continue
                 if (swapBytes) for (i in 0 until n - 1 step 2) { val t = buf[i]; buf[i] = buf[i + 1]; buf[i + 1] = t }
                 out.write(buf, 0, n)
+                onAudio?.invoke(buf, n)
                 level = rms(buf, n)
                 if (level > Recorder.SPEECH_RMS) { heardSpeech = true; silentBytes = 0 } else silentBytes += n
                 val total = out.size()

@@ -269,17 +269,19 @@ class TalkActivity : Activity() {
             val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = Hub.prefs.autoSend, noSpeechSeconds = Hub.prefs.silenceSeconds,
                 pauseSeconds = Hub.prefs.sendPauseSeconds.toDouble())
             recorder = rec
-            Hub.io.execute { record(rec, s, t) }
+            val live = Hub.stt.live()
+            rec.onAudio = live::feed
+            Hub.io.execute { record(rec, live, s, t) }
         }, 250)
     }
 
-    private fun record(rec: PhoneRecorder, s: ChatSession, t: Int) {
+    private fun record(rec: PhoneRecorder, live: Stt.Live, s: ChatSession, t: Int) {
         val pcm = try { rec.record() } catch (e: Exception) { Hub.log("Aufnahme fehlgeschlagen: $e"); null }
         recorder = null
-        if (t != turn) return
-        if (pcm == null || !rec.heardSpeech || pcm.size < 16000) { ui(t) { pauseTalk("Nichts gehört – Gespräch pausiert. Tippen zum Weiterreden.") }; return }
+        if (t != turn) { live.cancel(); return }
+        if (pcm == null || !rec.heardSpeech || pcm.size < 16000) { live.cancel(); ui(t) { pauseTalk("Nichts gehört – Gespräch pausiert. Tippen zum Weiterreden.") }; return }
         ui(t) { state = State.RECOGNIZING; updateUi() }
-        val text = try { Hub.stt.transcribe(pcm) } catch (e: Exception) {
+        val text = try { live.finish() } catch (e: Exception) {
             Hub.log("Spracherkennung fehlgeschlagen: ${e.message}")
             ui(t) { pauseTalk("Spracherkennung fehlgeschlagen.") }; return
         }

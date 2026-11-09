@@ -190,6 +190,53 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
         // Google lehnt lange Aufnahmen ab (Fehler 2 ab etwa 10 Sekunden) – darum in Stücke an leisen Stellen teilen
         else google(pcm16k)
 
+    private val liveExec = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /**
+     * Erkennung schon während der Aufnahme: Jedes fertige Stück (≤ 8 s, an einer leisen Stelle geschnitten)
+     * geht sofort an Google, sodass nach dem Sprechen nur noch das letzte Stück fehlt.
+     * Mit ElevenLabs wird wie bisher erst am Ende alles auf einmal erkannt.
+     */
+    fun live() = Live()
+
+    inner class Live {
+        private val useEleven = prefs.sttEngine == "eleven"
+        private val buf = java.io.ByteArrayOutputStream()
+        private val parts = mutableListOf<java.util.concurrent.Future<Result<String>>>()
+        @Volatile private var cancelled = false
+
+        /** Vom Aufnahme-Thread mit jedem neuen Audioblock aufgerufen. */
+        fun feed(b: ByteArray, n: Int) {
+            buf.write(b, 0, n)
+            if (useEleven || buf.size() <= GoogleStt.MAX_CHUNK) return
+            val all = buf.toByteArray()
+            val cut = GoogleStt.cutPoint(all)
+            submit(all.copyOfRange(0, cut))
+            buf.reset(); buf.write(all, cut, all.size - cut)
+        }
+
+        private fun submit(chunk: ByteArray) {
+            val i = parts.size + 1
+            parts += liveExec.submit<Result<String>> {
+                if (cancelled) Result.success("") else runCatching { googleChunk(chunk) }
+                    .onFailure { Hub.log("Google-Erkennung Stück $i übersprungen: ${it.message}") }
+            }
+        }
+
+        /** Nach dem Ende der Aufnahme: Rest erkennen und alles zusammensetzen. Blockiert. */
+        fun finish(): String {
+            if (useEleven) return eleven(buf.toByteArray())
+            if (buf.size() > 0) submit(buf.toByteArray())
+            val results = parts.map { it.get() }
+            val text = results.mapNotNull { it.getOrNull() }.filter { it.isNotBlank() }.joinToString(" ").trim()
+            if (text.isBlank()) results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+            return text
+        }
+
+        /** Aufnahme verworfen: noch nicht begonnene Stücke gar nicht erst erkennen. */
+        fun cancel() { cancelled = true }
+    }
+
     /** Stückweise erkennen; ein misslungenes Stück kostet nur dieses Stück, nicht die ganze Nachricht. */
     private fun google(pcm16k: ByteArray): String {
         val chunks = GoogleStt.split(pcm16k)

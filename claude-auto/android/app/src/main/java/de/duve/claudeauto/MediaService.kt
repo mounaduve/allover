@@ -239,9 +239,11 @@ class MediaService : MediaBrowserServiceCompat() {
             // Ende nur per Haken/⏭ (Fertig), keine automatische Pausen-Erkennung – Mouna will Denkpausen machen können
             val rec = PhoneRecorder(this, Hub.prefs.swapBytes, stopOnPause = false)
             recorder = rec
+            val live = Hub.stt.live()
+            rec.onAudio = live::feed
             phase = Phase.RECORDING
             updateState()
-            Hub.io.execute { record(rec, c) }
+            Hub.io.execute { record(rec, live, c) }
         }, 250)
     }
 
@@ -263,15 +265,15 @@ class MediaService : MediaBrowserServiceCompat() {
         Hub.speaker.speak("Verworfen."); updateState()
     }
 
-    private fun record(rec: PhoneRecorder, c: ChatSession) {
+    private fun record(rec: PhoneRecorder, live: Stt.Live, c: ChatSession) {
         val pcm = try { rec.record() } catch (e: Exception) { Hub.log("Aufnahme fehlgeschlagen: $e"); null }
         recorder = null
         Hub.log("Aufnahme ${pcm?.size ?: 0} Bytes über ${rec.micName}")
-        if (phase != Phase.RECORDING) return // abgebrochen
-        if (pcm == null || pcm.size < 16000) { done("Ich habe nichts gehört."); return }
+        if (phase != Phase.RECORDING) { live.cancel(); return } // abgebrochen
+        if (pcm == null || pcm.size < 16000) { live.cancel(); done("Ich habe nichts gehört."); return }
         main.post { phase = Phase.RECOGNIZING; updateState() }
         try {
-            val text = Hub.stt.transcribe(pcm)
+            val text = live.finish()
             Hub.log("Erkannt (${text.length} Zeichen)")
             main.post {
                 if (text.isBlank()) { done("Ich habe nichts verstanden."); return@post }

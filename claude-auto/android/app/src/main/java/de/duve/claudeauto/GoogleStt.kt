@@ -95,25 +95,33 @@ class GoogleStt(private val context: Context) {
         private const val BYTES_PER_SECOND = PhoneRecorder.RATE * 2
         private const val FRAME = 3200 // 100 ms
 
+        /** Stücke werden ab dieser Länge abgeschnitten (Google lehnt längere Aufnahmen ab). */
+        const val MAX_CHUNK = 8 * BYTES_PER_SECOND
+
         /** Teilt in Stücke von höchstens ~8 Sekunden, jeweils an der leisesten Stelle zwischen 5 und 8 Sekunden. */
         fun split(pcm: ByteArray): List<ByteArray> {
             val out = mutableListOf<ByteArray>()
             var start = 0
-            while (pcm.size - start > 8 * BYTES_PER_SECOND) {
-                var cut = start + 8 * BYTES_PER_SECOND
-                var quietest = Double.MAX_VALUE
-                var pos = start + 5 * BYTES_PER_SECOND
-                while (pos + FRAME <= start + 8 * BYTES_PER_SECOND) {
-                    val level = rms(pcm.copyOfRange(pos, pos + FRAME), FRAME)
-                    if (level < quietest) { quietest = level; cut = pos + FRAME / 2 }
-                    pos += FRAME / 2
-                }
-                cut -= cut % 2
+            while (pcm.size - start > MAX_CHUNK) {
+                val cut = cutPoint(pcm, start)
                 out += pcm.copyOfRange(start, cut)
                 start = cut
             }
             out += pcm.copyOfRange(start, pcm.size)
             return out
+        }
+
+        /** Leiseste Stelle zwischen 5 und 8 Sekunden ab `start` (gerade Byte-Position). */
+        fun cutPoint(pcm: ByteArray, start: Int = 0): Int {
+            var cut = start + MAX_CHUNK
+            var quietest = Double.MAX_VALUE
+            var pos = start + 5 * BYTES_PER_SECOND
+            while (pos + FRAME <= start + MAX_CHUNK) {
+                val level = rms(pcm.copyOfRange(pos, pos + FRAME), FRAME)
+                if (level < quietest) { quietest = level; cut = pos + FRAME / 2 }
+                pos += FRAME / 2
+            }
+            return cut - cut % 2
         }
     }
 
