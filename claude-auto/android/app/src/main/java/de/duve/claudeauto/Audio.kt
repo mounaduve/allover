@@ -167,6 +167,8 @@ class Speaker(private val context: Context) {
     private val readyLatch = java.util.concurrent.CountDownLatch(1)
     private val synthDone = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    /** Erzeugt die Sprachdateien, während der Worker schon die ersten abspielt. */
+    private val synth = java.util.concurrent.Executors.newSingleThreadExecutor()
     @Volatile private var generation = 0
     @Volatile private var player: MediaPlayer? = null
     @Volatile private var partDone: java.util.concurrent.CountDownLatch? = null
@@ -223,30 +225,27 @@ class Speaker(private val context: Context) {
         val gen = generation
         worker.execute {
             if (gen != generation || text.isBlank()) return@execute
-            val files = try { render(text, gen) } catch (e: Exception) {
-                Hub.log("Vorlesen fehlgeschlagen: $e"); emptyList()
-            }
-            if (gen != generation || files.isEmpty()) { files.forEach { it.delete() }; return@execute }
-            playAll(files, gen)
+            // Teile einzeln erzeugen und sofort abspielen – bei langen Antworten sonst minutenlang Stille
+            val eleven = Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank() && !elevenBlocked
+            val parts = splitSentences(text, if (eleven) 1500 else 1200)
+            val files = parts.map { part -> synth.submit<java.io.File?> { if (gen != generation) null else renderPart(part) } }
+            playAll(files, parts.map { it.length * 65 }, gen)
             if (gen == generation) onDone?.invoke()
         }
     }
 
-    /** Text → Audiodateien. ElevenLabs bei Bedarf, sonst (oder bei Fehlern) Handy-Stimme. */
-    private fun render(text: String, gen: Int): List<java.io.File> {
-        val eleven = Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank() && !elevenBlocked
-        return splitSentences(text, if (eleven) 1500 else 3000).mapNotNull { part ->
-            if (gen != generation) return@mapNotNull null
-            if (eleven) {
-                try { return@mapNotNull fetchEleven(part) } catch (e: Exception) {
-                    Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
-                    // Konto/Stimme nicht erlaubt: bis zum nächsten Speichern nicht mehr versuchen, spart Wartezeit
-                    if (e is HttpException && e.code in listOf(401, 402, 403)) elevenBlocked = true
-                }
+    /** Ein Textteil → Audiodatei. ElevenLabs bei Bedarf, sonst (oder bei Fehlern) Handy-Stimme. */
+    private fun renderPart(part: String): java.io.File? = try {
+        var f: java.io.File? = null
+        if (Hub.prefs.naturalVoice && Hub.prefs.elevenKey.isNotBlank() && !elevenBlocked) {
+            try { f = fetchEleven(part) } catch (e: Exception) {
+                Hub.log("ElevenLabs-Stimme fehlgeschlagen: ${e.message}")
+                // Konto/Stimme nicht erlaubt: bis zum nächsten Speichern nicht mehr versuchen, spart Wartezeit
+                if (e is HttpException && e.code in listOf(401, 402, 403)) elevenBlocked = true
             }
-            synthAndroid(part)
         }
-    }
+        f ?: synthAndroid(part).also { if (it == null) Hub.log("Handy-Stimme lieferte nichts (${part.length} Zeichen)") }
+    } catch (e: Exception) { Hub.log("Vorlesen fehlgeschlagen: $e"); null }
 
     private fun synthAndroid(text: String): java.io.File? {
         readyLatch.await(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -292,37 +291,44 @@ class Speaker(private val context: Context) {
         r.release(); d
     }.getOrDefault(0)
 
-    /** Spielt alle Teile nacheinander; wartet auch, solange angehalten ist. */
-    private fun playAll(files: List<java.io.File>, gen: Int) {
-        durations = files.map { lengthMs(it) }
+    /** Spielt alle Teile nacheinander, sobald sie fertig erzeugt sind; wartet auch, solange angehalten ist. */
+    private fun playAll(files: List<java.util.concurrent.Future<java.io.File?>>, estimates: List<Int>, gen: Int) {
+        val lengths = estimates.toMutableList()
+        durations = lengths.toList()
         index = 0
         paused = false
         speaking = true
         audio?.requestAudioFocus(focus)
         try {
-            for ((i, f) in files.withIndex()) {
+            for ((i, fut) in files.withIndex()) {
                 if (gen != generation) break
                 index = i
-                val done = java.util.concurrent.CountDownLatch(1)
-                val mp = try {
-                    MediaPlayer().apply {
-                        setAudioAttributes(attrs)
-                        setDataSource(f.path)
-                        setOnCompletionListener { done.countDown() }
-                        setOnErrorListener { _, _, _ -> done.countDown(); true }
-                        prepare()
-                    }
-                } catch (e: Exception) { Hub.log("Abspielen fehlgeschlagen: $e"); continue }
-                partDone = done
-                player = mp
-                if (!paused) mp.start()
-                Hub.changed()
-                done.await()
-                player = null
-                runCatching { mp.release() }
+                val f = runCatching { fut.get() }.getOrNull() ?: continue
+                try {
+                    if (gen != generation) break
+                    lengths[i] = lengthMs(f); durations = lengths.toList()
+                    val done = java.util.concurrent.CountDownLatch(1)
+                    val mp = try {
+                        MediaPlayer().apply {
+                            setAudioAttributes(attrs)
+                            setDataSource(f.path)
+                            setOnCompletionListener { done.countDown() }
+                            setOnErrorListener { _, _, _ -> done.countDown(); true }
+                            prepare()
+                        }
+                    } catch (e: Exception) { Hub.log("Abspielen fehlgeschlagen: $e"); continue }
+                    partDone = done
+                    player = mp
+                    if (!paused) mp.start()
+                    Hub.changed()
+                    done.await()
+                    player = null
+                    runCatching { mp.release() }
+                } finally { f.delete() }
             }
         } finally {
-            files.forEach { it.delete() }
+            // Was nicht mehr abgespielt wurde, aufräumen
+            files.forEach { fut -> if (fut.isDone) runCatching { fut.get()?.delete() } else fut.cancel(false) }
             if (gen == generation) {
                 speaking = false; paused = false; durations = emptyList(); index = 0
                 audio?.abandonAudioFocusRequest(focus)
@@ -358,7 +364,7 @@ class Speaker(private val context: Context) {
         } catch (e: Exception) { return "Fehler: ${e.message}" }
         stop()
         val gen = generation
-        worker.execute { playAll(listOf(f), gen) }
+        worker.execute { playAll(listOf(java.util.concurrent.CompletableFuture.completedFuture(f)), listOf(0), gen) }
         return null
     }
 
@@ -366,6 +372,8 @@ class Speaker(private val context: Context) {
     fun stop() {
         generation++
         tts.stop()
+        // Laufende Erzeugung nicht bis zum Zeitlimit hängen lassen – sonst startet „Nochmal anhören“ erst nach einer Minute
+        synthDone.values.forEach { it.countDown() }; synthDone.clear()
         player?.let { p -> runCatching { p.stop() } }
         partDone?.countDown()
         speaking = false; paused = false
