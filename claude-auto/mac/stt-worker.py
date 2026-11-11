@@ -78,7 +78,8 @@ def main() -> None:
             got = fetch()
         except Exception as e:  # Relay kurz weg, Netz weg, Mac aufgewacht
             log(f"Abholen fehlgeschlagen: {e}")
-            time.sleep(5)
+            # 404: Relay kennt die Erkennung (noch) nicht – selten nachfragen
+            time.sleep(60 if getattr(e, "code", None) == 404 else 5)
             continue
         if not got:
             continue
