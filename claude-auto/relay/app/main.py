@@ -17,7 +17,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 DB_PATH = os.environ.get("DB_PATH", "/app/data/relay.db")
@@ -61,6 +61,11 @@ def init_db() -> None:
                 created REAL, delivered REAL);
             CREATE TABLE IF NOT EXISTS replies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, cli_id TEXT, text TEXT, created REAL);
+            CREATE TABLE IF NOT EXISTS stt_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL, parts INTEGER,
+                taken REAL, text TEXT, error TEXT);
+            CREATE TABLE IF NOT EXISTS stt_parts (
+                job INTEGER, seq INTEGER, data BLOB, PRIMARY KEY (job, seq));
             """
         )
 
@@ -301,3 +306,95 @@ def mac_reply(body: MacReply):
         con.execute("DELETE FROM replies WHERE created < ?", (now - 7 * 86400,))
         con.execute("DELETE FROM messages WHERE created < ?", (now - 7 * 86400,))
     return {"id": cur.lastrowid}
+
+
+# ---------- Spracherkennung auf dem Mac (Whisper) ----------
+# Die App lädt die Aufnahme schon während des Sprechens in Teilen hoch, meldet am Ende,
+# wie viele Teile es sind, und wartet auf den Text. Der Mac holt fertige Aufträge ab.
+
+STT_MAX_PART = 2_000_000
+STT_KEEP_SECONDS = 3600
+
+
+@app.post("/api/stt", dependencies=[Depends(require_device)])
+def stt_create():
+    now = time.time()
+    with db() as con:
+        old = [r["id"] for r in con.execute("SELECT id FROM stt_jobs WHERE created < ?", (now - STT_KEEP_SECONDS,))]
+        con.executemany("DELETE FROM stt_parts WHERE job=?", [(i,) for i in old])
+        con.execute("DELETE FROM stt_jobs WHERE created < ?", (now - STT_KEEP_SECONDS,))
+        cur = con.execute("INSERT INTO stt_jobs(created) VALUES(?)", (now,))
+    return {"id": cur.lastrowid, "mac_online": _mac_online()}
+
+
+@app.post("/api/stt/{job}/part", dependencies=[Depends(require_device)])
+async def stt_part(job: int, seq: int, request: Request):
+    data = await request.body()
+    if len(data) > STT_MAX_PART:
+        raise HTTPException(413, "Teil zu groß")
+    with db() as con:
+        if not con.execute("SELECT 1 FROM stt_jobs WHERE id=?", (job,)).fetchone():
+            raise HTTPException(404, "Auftrag unbekannt")
+        con.execute("INSERT OR REPLACE INTO stt_parts(job, seq, data) VALUES(?, ?, ?)", (job, seq, data))
+    return {"ok": True}
+
+
+@app.post("/api/stt/{job}/done", dependencies=[Depends(require_device)])
+def stt_done(job: int, parts: int):
+    with db() as con:
+        con.execute("UPDATE stt_jobs SET parts=? WHERE id=?", (parts, job))
+    return {"ok": True, "mac_online": _mac_online()}
+
+
+@app.get("/api/stt/{job}", dependencies=[Depends(require_device)])
+async def stt_result(job: int, wait: int = 0):
+    deadline = time.time() + min(max(wait, 0), MAX_WAIT)
+    while True:
+        with db() as con:
+            row = con.execute("SELECT taken, text, error FROM stt_jobs WHERE id=?", (job,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Auftrag unbekannt")
+        if row["text"] is not None or row["error"] is not None:
+            return {"text": row["text"], "error": row["error"]}
+        if time.time() >= deadline:
+            return Response(status_code=204, headers={"X-Taken": "1" if row["taken"] else "0"})
+        await asyncio.sleep(0.3)
+
+
+def _next_stt_job(con):
+    for row in con.execute("SELECT id, parts FROM stt_jobs WHERE parts IS NOT NULL AND taken IS NULL ORDER BY id"):
+        have = con.execute("SELECT count(*) FROM stt_parts WHERE job=?", (row["id"],)).fetchone()[0]
+        if have >= row["parts"]:
+            return row["id"]
+    return None
+
+
+@app.get("/api/mac/stt", dependencies=[Depends(require_mac)])
+async def mac_stt(wait: int = 0):
+    """Nächster vollständiger Auftrag als rohes PCM (16 kHz, 16 Bit, mono), Nummer im Kopf X-Job."""
+    deadline = time.time() + min(max(wait, 0), MAX_WAIT)
+    while True:
+        _set_state("mac_seen", time.time())
+        with db() as con:
+            job = _next_stt_job(con)
+            if job is not None:
+                con.execute("UPDATE stt_jobs SET taken=? WHERE id=?", (time.time(), job))
+                data = b"".join(r["data"] for r in con.execute(
+                    "SELECT data FROM stt_parts WHERE job=? ORDER BY seq", (job,)))
+                return Response(content=data, media_type="application/octet-stream", headers={"X-Job": str(job)})
+        if time.time() >= deadline:
+            return Response(status_code=204)
+        await asyncio.sleep(0.3)
+
+
+class SttResult(BaseModel):
+    text: str | None = Field(None, max_length=50000)
+    error: str | None = Field(None, max_length=1000)
+
+
+@app.post("/api/mac/stt/{job}", dependencies=[Depends(require_mac)])
+def mac_stt_result(job: int, body: SttResult):
+    with db() as con:
+        con.execute("UPDATE stt_jobs SET text=?, error=? WHERE id=?", (body.text, body.error, job))
+        con.execute("DELETE FROM stt_parts WHERE job=?", (job,))
+    return {"ok": True}

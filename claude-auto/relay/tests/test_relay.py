@@ -57,3 +57,23 @@ def test_log(client):
     assert client.post("/api/log", json={"lines": ["a"]}).status_code == 401
     client.post("/api/log", headers=dev, json={"lines": ["eins", "zwei"]})
     assert client.get("/api/mac/log", headers=MAC).json()["lines"] == ["eins", "zwei"]
+
+
+def test_stt(client):
+    dev = pair(client)
+    job = client.post("/api/stt", headers=dev).json()["id"]
+    # Teile kommen in falscher Reihenfolge und einer doppelt (Wiederholung nach Netzfehler)
+    client.post(f"/api/stt/{job}/part", headers=dev, params={"seq": 1}, content=b"BB")
+    client.post(f"/api/stt/{job}/part", headers=dev, params={"seq": 0}, content=b"AA")
+    client.post(f"/api/stt/{job}/part", headers=dev, params={"seq": 1}, content=b"BB")
+    assert client.get("/api/mac/stt", headers=MAC).status_code == 204  # noch nicht fertig gemeldet
+    client.post(f"/api/stt/{job}/done", headers=dev, params={"parts": 3})
+    assert client.get("/api/mac/stt", headers=MAC).status_code == 204  # Teil 2 fehlt noch
+    client.post(f"/api/stt/{job}/part", headers=dev, params={"seq": 2}, content=b"CC")
+    r = client.get("/api/mac/stt", headers=MAC)
+    assert r.content == b"AABBCC" and r.headers["X-Job"] == str(job)
+    assert client.get("/api/mac/stt", headers=MAC).status_code == 204
+    assert client.get(f"/api/stt/{job}", headers=dev).status_code == 204
+    client.post(f"/api/mac/stt/{job}", headers=MAC, json={"text": "Hallo Welt"})
+    assert client.get(f"/api/stt/{job}", headers=dev).json() == {"text": "Hallo Welt", "error": None}
+    assert client.get(f"/api/stt/{job}", headers=MAC).status_code == 401

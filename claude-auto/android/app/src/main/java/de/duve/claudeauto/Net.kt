@@ -62,7 +62,7 @@ class Prefs(context: Context) {
     var sendPauseSeconds: Int
         get() = p.getInt("send_pause_seconds", 2)
         set(v) = p.edit().putInt("send_pause_seconds", v).apply()
-    /** Spracherkennung: "google" (kostenlos, auf dem Handy) oder "eleven" (ElevenLabs Scribe, verbraucht Credits). */
+    /** Spracherkennung: "google" (kostenlos, auf dem Handy), "mac" (Whisper auf dem Mac) oder "eleven" (ElevenLabs Scribe, verbraucht Credits). */
     var sttEngine: String
         get() = p.getString("stt_engine", "google")!!
         set(v) = p.edit().putString("stt_engine", v).apply()
@@ -79,7 +79,7 @@ class Prefs(context: Context) {
 
 class HttpException(val code: Int, message: String) : Exception(message)
 
-data class Http(val code: Int, val body: String)
+data class Http(val code: Int, val body: String, val header: (String) -> String? = { null })
 
 fun http(
     url: String,
@@ -100,8 +100,9 @@ fun http(
     val code = c.responseCode
     val stream = if (code >= 400) c.errorStream else c.inputStream
     val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+    val fields = c.headerFields.filterKeys { it != null }.mapKeys { it.key.lowercase() }
     c.disconnect()
-    return Http(code, text)
+    return Http(code, text) { name -> fields[name.lowercase()]?.firstOrNull() }
 }
 
 data class ChatSession(val id: String, val name: String, val busy: Boolean, val lastReplyId: Long)
@@ -147,6 +148,38 @@ class Relay(private val prefs: Prefs) {
         http("${prefs.relayUrl}/api/log", "POST", auth() + json, b)
     }
 
+    // ---- Spracherkennung auf dem Mac (Whisper) ----
+
+    /** Neuer Erkennungsauftrag; liefert Nummer und ob der Mac gerade erreichbar ist. */
+    fun sttCreate(): Pair<Long, Boolean> {
+        val r = http("${prefs.relayUrl}/api/stt", "POST", auth())
+        if (r.code != 200) throw HttpException(r.code, "Mac-Erkennung anlegen: ${r.code}")
+        val o = JSONObject(r.body)
+        return o.getLong("id") to o.getBoolean("mac_online")
+    }
+
+    fun sttPart(job: Long, seq: Int, pcm: ByteArray) {
+        val r = http("${prefs.relayUrl}/api/stt/$job/part?seq=$seq", "POST",
+            auth() + mapOf("Content-Type" to "application/octet-stream"), pcm, timeoutMs = 30_000)
+        if (r.code != 200) throw HttpException(r.code, "Mac-Erkennung Teil $seq: ${r.code}")
+    }
+
+    fun sttDone(job: Long, parts: Int) {
+        val r = http("${prefs.relayUrl}/api/stt/$job/done?parts=$parts", "POST", auth())
+        if (r.code != 200) throw HttpException(r.code, "Mac-Erkennung abschließen: ${r.code}")
+    }
+
+    /** Text (oder Fehler) des Auftrags; null, solange er nicht fertig ist. `taken`: Mac arbeitet schon daran. */
+    data class SttPoll(val text: String?, val error: String?, val taken: Boolean)
+
+    fun sttResult(job: Long, wait: Int): SttPoll {
+        val r = http("${prefs.relayUrl}/api/stt/$job?wait=$wait", headers = auth(), timeoutMs = 40_000)
+        if (r.code == 204) return SttPoll(null, null, r.header("X-Taken") == "1")
+        if (r.code != 200) throw HttpException(r.code, "Mac-Erkennung Ergebnis: ${r.code}")
+        val o = JSONObject(r.body)
+        return SttPoll(o.optString("text").takeIf { !o.isNull("text") }, o.optString("error").takeIf { !o.isNull("error") }, true)
+    }
+
     fun pairStart(name: String): Pair<String, String> {
         val b = JSONObject().put("name", name).toString().toByteArray()
         val r = http("${prefs.relayUrl}/api/pair/start", "POST", json, b)
@@ -182,6 +215,11 @@ fun loadElevenVoices(key: String): List<ElevenVoice> {
 
 /** Spracherkennung über ElevenLabs Scribe. Die Aufnahme geht direkt vom Handy dorthin. */
 class Stt(private val prefs: Prefs, context: android.content.Context) {
+    companion object {
+        /** 5 Sekunden Audio (16 kHz, 16 Bit) je hochgeladenem Teil. */
+        const val PART_BYTES = 5 * 32_000
+    }
+
     private val google = GoogleStt(context.applicationContext)
 
     /** Google (kostenlos) oder ElevenLabs, je nach Einstellung. */
@@ -204,9 +242,11 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
         private val buf = java.io.ByteArrayOutputStream()
         private val parts = mutableListOf<java.util.concurrent.Future<Result<String>>>()
         @Volatile private var cancelled = false
+        private val mac = if (prefs.sttEngine == "mac") MacUpload() else null
 
         /** Vom Aufnahme-Thread mit jedem neuen Audioblock aufgerufen. */
         fun feed(b: ByteArray, n: Int) {
+            mac?.feed(b, n)
             buf.write(b, 0, n)
             if (useEleven || buf.size() <= GoogleStt.MAX_CHUNK) return
             val all = buf.toByteArray()
@@ -227,6 +267,8 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
         fun finish(): String {
             if (useEleven) return eleven(buf.toByteArray())
             if (buf.size() > 0) submit(buf.toByteArray())
+            // Whisper auf dem Mac zuerst; Google läuft nebenher und springt ein, wenn der Mac nicht liefert
+            mac?.finish()?.let { return it }
             val results = parts.map { it.get() }
             val text = results.mapNotNull { it.getOrNull() }.filter { it.isNotBlank() }.joinToString(" ").trim()
             if (text.isBlank()) results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
@@ -234,7 +276,79 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
         }
 
         /** Aufnahme verworfen: noch nicht begonnene Stücke gar nicht erst erkennen. */
-        fun cancel() { cancelled = true }
+        fun cancel() { cancelled = true; mac?.failed = true }
+    }
+
+    /**
+     * Lädt die Aufnahme schon während des Sprechens in Teilen (je 5 s) übers Relay zum Mac hoch,
+     * damit am Ende nur noch der letzte Teil fehlt. Jeder Fehler schaltet still auf Google zurück.
+     */
+    private inner class MacUpload {
+        private val exec = java.util.concurrent.Executors.newSingleThreadExecutor()
+        private val pending = java.io.ByteArrayOutputStream()
+        private var seq = 0
+        private var job = 0L
+        @Volatile var failed = false
+
+        init {
+            exec.execute {
+                runCatching { Hub.relay.sttCreate() }
+                    .onSuccess { (id, online) ->
+                        job = id
+                        if (!online) fail("Mac nicht erreichbar")
+                    }
+                    .onFailure { fail(it.message) }
+            }
+        }
+
+        private fun fail(why: String?) {
+            if (!failed) Hub.log("Mac-Erkennung aus, nehme Google: $why")
+            failed = true
+        }
+
+        fun feed(b: ByteArray, n: Int) {
+            if (failed) return
+            pending.write(b, 0, n)
+            if (pending.size() >= PART_BYTES) flush()
+        }
+
+        private fun flush() {
+            val data = pending.toByteArray(); pending.reset()
+            val s = seq++
+            exec.execute {
+                if (failed) return@execute
+                for (attempt in 1..3) {
+                    val r = runCatching { Hub.relay.sttPart(job, s, data) }
+                    if (r.isSuccess) return@execute
+                    if (attempt == 3) fail(r.exceptionOrNull()?.message) else Thread.sleep(500)
+                }
+            }
+        }
+
+        /** Text vom Mac oder null (dann Google). Blockiert höchstens etwa zwei Minuten. */
+        fun finish(): String? {
+            if (failed) return null
+            if (pending.size() > 0) flush()
+            val done = exec.submit<Unit> { if (!failed) runCatching { Hub.relay.sttDone(job, seq) }.onFailure { fail(it.message) } }
+            runCatching { done.get(60, java.util.concurrent.TimeUnit.SECONDS) }.onFailure { fail("Hochladen zu langsam") }
+            exec.shutdown()
+            if (failed) return null
+            val start = System.currentTimeMillis()
+            while (!failed) {
+                val r = runCatching { Hub.relay.sttResult(job, 10) }.getOrElse { fail(it.message); break }
+                r.text?.let { t ->
+                    if (t.isBlank()) { fail("Mac hat nichts erkannt"); return null }
+                    Hub.log("Mac-Erkennung: ${seq} Teile, ${(System.currentTimeMillis() - start) / 1000} s gewartet")
+                    return t.trim()
+                }
+                r.error?.let { fail(it); return null }
+                val waited = System.currentTimeMillis() - start
+                // Der Mac holt fertige Aufträge sofort ab; tut er das nicht, schläft er oder der Dienst läuft nicht
+                if (!r.taken && waited > 12_000) fail("Mac holt nicht ab")
+                if (waited > 120_000) fail("Mac zu langsam")
+            }
+            return null
+        }
     }
 
     /** Stückweise erkennen; ein misslungenes Stück kostet nur dieses Stück, nicht die ganze Nachricht. */

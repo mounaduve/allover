@@ -184,21 +184,25 @@ class MainActivity : Activity() {
 
         // Spracherkennung
         val stt = section(col, "Spracherkennung", padded = false)
-        // Wahl der Erkennung: Google kostenlos (Standard) oder ElevenLabs (Credits waren nach Stunden aufgebraucht)
+        // Wahl der Erkennung: Google kostenlos (Standard), Whisper auf dem Mac (ganze Aufnahme, fällt auf Google zurück) oder ElevenLabs (Credits waren nach Stunden aufgebraucht)
         val sttSeg = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = rounded(C.DOCK, 12)
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        val sttGoogle = segment("Google · kostenlos")
+        val sttGoogle = segment("Google")
+        val sttMac = segment("Mac · Whisper")
         val sttEleven = segment("ElevenLabs")
         sttSeg.addView(sttGoogle, LinearLayout.LayoutParams(0, dp(40), 1f))
+        sttSeg.addView(sttMac, LinearLayout.LayoutParams(0, dp(40), 1f))
         sttSeg.addView(sttEleven, LinearLayout.LayoutParams(0, dp(40), 1f))
         fun showStt() {
-            sttGoogle.isSelected = p.sttEngine != "eleven"; sttEleven.isSelected = p.sttEngine == "eleven"
-            styleSegment(sttGoogle); styleSegment(sttEleven)
+            sttGoogle.isSelected = p.sttEngine == "google"; sttMac.isSelected = p.sttEngine == "mac"
+            sttEleven.isSelected = p.sttEngine == "eleven"
+            styleSegment(sttGoogle); styleSegment(sttMac); styleSegment(sttEleven)
         }
         sttGoogle.setOnClickListener { p.sttEngine = "google"; showStt() }
+        sttMac.setOnClickListener { p.sttEngine = "mac"; showStt() }
         sttEleven.setOnClickListener { p.sttEngine = "eleven"; showStt() }
         showStt()
         stt.addView(sttSeg, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(16), dp(16), dp(16), dp(4)) })
