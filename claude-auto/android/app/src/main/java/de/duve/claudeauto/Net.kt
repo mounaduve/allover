@@ -335,7 +335,9 @@ class Stt(private val prefs: Prefs, context: android.content.Context) {
             if (failed) return null
             val start = System.currentTimeMillis()
             while (!failed) {
-                val r = runCatching { Hub.relay.sttResult(job, 10) }.getOrElse { fail(it.message); break }
+                val polled = runCatching { Hub.relay.sttResult(job, 10) }
+                val r = polled.getOrNull()
+                if (r == null) { fail(polled.exceptionOrNull()?.message); break }
                 r.text?.let { t ->
                     if (t.isBlank()) { fail("Mac hat nichts erkannt"); return null }
                     Hub.log("Mac-Erkennung: ${seq} Teile, ${(System.currentTimeMillis() - start) / 1000} s gewartet")
