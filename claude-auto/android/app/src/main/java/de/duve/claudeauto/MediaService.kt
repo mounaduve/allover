@@ -58,6 +58,7 @@ class MediaService : MediaBrowserServiceCompat() {
         session.isActive = true
         sessionToken = session.sessionToken
         Hub.addListener(listener)
+        carConnection.observeForever(carObserver)
         main.post(refresher)
         updateState()
         Hub.log("Dienst gestartet")
@@ -66,6 +67,7 @@ class MediaService : MediaBrowserServiceCompat() {
     override fun onDestroy() {
         main.removeCallbacks(refresher)
         main.removeCallbacks(releaser)
+        carConnection.removeObserver(carObserver)
         Hub.removeListener(listener)
         recorder?.stop()
         session.release()
@@ -82,9 +84,18 @@ class MediaService : MediaBrowserServiceCompat() {
     private val releaser = object : Runnable {
         override fun run() {
             if (Hub.anyWaiting() || Hub.speaker.speaking || phase != Phase.IDLE) main.postDelayed(this, 5_000)
-            else stopForegroundIfIdle(force = false)
+            else {
+                stopForegroundIfIdle(force = false)
+                // Außerhalb des Autos nicht im Hintergrund weiterlaufen – sonst kommen Ansagen auch zu Hause
+                if (!inCar) stopSelf()
+            }
         }
     }
+
+    /** Läuft Android Auto gerade? Nur dann werden neue Antworten anderer Sitzungen angesagt. */
+    @Volatile private var inCar = false
+    private val carConnection by lazy { androidx.car.app.connection.CarConnection(this).type }
+    private val carObserver = androidx.lifecycle.Observer<Int> { inCar = it == androidx.car.app.connection.CarConnection.CONNECTION_TYPE_PROJECTION }
 
     // ---------- Liste ----------
 
@@ -155,7 +166,7 @@ class MediaService : MediaBrowserServiceCompat() {
             val prev = knownReply[s.id]
             knownReply[s.id] = maxOf(prev ?: 0, s.lastReplyId)
             if (!baselineDone || s.lastReplyId <= (prev ?: 0)) continue
-            if (Hub.isWaiting(s.id) || (Hub.lastReply[s.id]?.id ?: 0) >= s.lastReplyId) continue
+            if (!inCar || Hub.isWaiting(s.id) || (Hub.lastReply[s.id]?.id ?: 0) >= s.lastReplyId) continue
             if (phase == Phase.IDLE) current = s // Play liest dann genau diese Antwort
             Hub.speaker.speak("Neue Antwort von ${s.name}.")
             updateState()
