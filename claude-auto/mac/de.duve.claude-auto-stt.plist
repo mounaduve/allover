@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Whisper-Erkennung für die Auto-App. Nach ~/Library/LaunchAgents kopieren und mit launchctl laden. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>de.duve.claude-auto-stt</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3.13</string>
+    <string>/Users/mounaduve/Documents/allover-auto/claude-auto/mac/stt-worker.py</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/mounaduve/Library/Logs/claude-auto-stt.log</string>
+  <key>StandardErrorPath</key><string>/Users/mounaduve/Library/Logs/claude-auto-stt.log</string>
+</dict>
+</plist>

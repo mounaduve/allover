@@ -15,6 +15,7 @@ import wave
 
 HOME = os.path.expanduser("~")
 MODEL = os.path.join(HOME, ".claude/whisper/ggml-large-v3-turbo.bin")
+VAD = os.path.join(HOME, ".claude/whisper/ggml-silero-v5.1.2.bin")
 WHISPER = "/opt/homebrew/bin/whisper-cli"
 
 
@@ -60,7 +61,8 @@ def transcribe(pcm: bytes) -> str:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
             w.writeframes(pcm)
         r = subprocess.run(
-            [WHISPER, "-m", MODEL, "-l", "de", "-nt", "-np", "-f", wav, "-otxt", "-of", os.path.join(d, "out")],
+            # VAD überspringt Pausen; ohne sie erfindet Whisper in Stille gern Sätze („Untertitel im Auftrag …“)
+            [WHISPER, "-m", MODEL, "-l", "de", "-nt", "-np", "-sns", "--vad", "-vm", VAD, "-f", wav, "-otxt", "-of", os.path.join(d, "out")],
             capture_output=True, text=True, timeout=600,
         )
         if r.returncode != 0:
