@@ -12,6 +12,13 @@ SELF="${AUTO_SELF_HOST_ID:-}"
 sessions_json() {
   SELF="$SELF" python3 - <<'PY'
 import glob, json, os
+# Zuletzt benutzt wie in der Seitenleiste der Claude-App; updatedAt der CLI-Datei bleibt oft stehen
+act = {}
+for f in glob.glob(os.path.expanduser("~/Library/Application Support/Claude/claude-code-sessions/*/*/local_*.json")):
+    try:
+        act[os.path.basename(f)[:-5]] = json.load(open(f)).get("lastActivityAt") or 0
+    except Exception:
+        pass
 out = []
 for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
     try:
@@ -23,7 +30,7 @@ for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
     if s.get("entrypoint") != "claude-desktop" or not hid or hid == os.environ.get("SELF"):
         continue
     out.append({"id": hid, "cli_id": s["sessionId"], "name": s.get("name"),
-                "status": s.get("status"), "_t": s.get("updatedAt", 0)})
+                "status": s.get("status"), "_t": max(act.get(hid, 0), s.get("updatedAt", 0))})
 out.sort(key=lambda x: -x.pop("_t"))
 print(json.dumps(out))
 PY
