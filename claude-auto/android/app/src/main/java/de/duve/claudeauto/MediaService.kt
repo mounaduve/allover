@@ -98,6 +98,7 @@ class MediaService : MediaBrowserServiceCompat() {
     private val carObserver = androidx.lifecycle.Observer<Int> {
         val now = it == androidx.car.app.connection.CarConnection.CONNECTION_TYPE_PROJECTION
         val leftCar = inCar && !now
+        if (now != inCar) Hub.log(if (now) "Auto verbunden" else "Auto getrennt")
         inCar = now
         if (leftCar) {
             // Ausgestiegen: sofort Ruhe – keine Aufnahme, kein Warten, kein Vorlesen, Dienst beenden
@@ -170,6 +171,7 @@ class MediaService : MediaBrowserServiceCompat() {
             if (!baselineDone || s.lastReplyId <= (prev ?: 0)) continue
             if (!inCar || Hub.isWaiting(s.id) || (Hub.lastReply[s.id]?.id ?: 0) >= s.lastReplyId) continue
             if (phase == Phase.IDLE) current = s // Play liest dann genau diese Antwort
+            Hub.log("Ansage „Neue Antwort von ${s.name}“ (Auto verbunden: $inCar)")
             Hub.speaker.speak("Neue Antwort von ${s.name}.")
             updateState()
         }
