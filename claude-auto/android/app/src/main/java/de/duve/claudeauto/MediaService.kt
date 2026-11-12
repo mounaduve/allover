@@ -44,7 +44,6 @@ class MediaService : MediaBrowserServiceCompat() {
             if (phase == Phase.IDLE) sessions.firstOrNull { it.id == id }?.let { current = it }
         }
         updateState()
-        notifyChildrenChanged(ROOT) // Status in der Liste (wartet, neue Antwort) sofort nachziehen
     }
     private val refresher = object : Runnable {
         override fun run() { refreshSessions(); main.postDelayed(this, 20_000) }

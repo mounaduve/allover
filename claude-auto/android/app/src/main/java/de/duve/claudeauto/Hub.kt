@@ -133,10 +133,18 @@ object Hub {
                     errors = 0
                     if (gen != generation) break // inzwischen ausgestiegen
                     log("Antwort von $name erhalten (${r.text.length} Zeichen), lese vor")
-                    markHeard(sessionId, r)
+                    lastReply[sessionId] = r
                     got = r
                     replyFocus = sessionId
-                    main.post { speaker.speak(r.text, onSpoken) } // Mouna will direkt die Antwort hören, ohne Vorspann
+                    // Mouna will direkt die Antwort hören, ohne Vorspann. Erst nach dem Vorlesen als gehört zählen –
+                    // bleibt es stumm, steht in der Liste weiter „neue Antwort“.
+                    main.post {
+                        speaker.speak(r.text) {
+                            log("Antwort von $name vorgelesen")
+                            markHeard(sessionId, r)
+                            onSpoken?.invoke()
+                        }
+                    }
                     break
                 }
             } finally {
