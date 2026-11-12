@@ -21,6 +21,10 @@ class Prefs(context: Context) {
         get() = p.getString("eleven_key", "")!!
         set(v) = p.edit().putString("eleven_key", v.trim()).apply()
     /** Falls die Erkennung nur Unsinn liefert: Byte-Reihenfolge der Aufnahme tauschen. */
+    /** Höchste gehörte oder angezeigte Antwort je Sitzung, für „neue Antwort“ in der Liste. -1 = Sitzung noch nie gesehen. */
+    fun heardReply(sessionId: String): Long = p.getLong("heard_$sessionId", -1)
+    fun setHeardReply(sessionId: String, replyId: Long) = p.edit().putLong("heard_$sessionId", replyId).apply()
+
     var swapBytes: Boolean
         get() = p.getBoolean("swap_bytes", false)
         set(v) = p.edit().putBoolean("swap_bytes", v).apply()

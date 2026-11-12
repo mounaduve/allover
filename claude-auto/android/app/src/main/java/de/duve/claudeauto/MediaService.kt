@@ -45,6 +45,7 @@ class MediaService : MediaBrowserServiceCompat() {
             if (phase == Phase.IDLE) sessions.firstOrNull { it.id == id }?.let { current = it }
         }
         updateState()
+        notifyChildrenChanged(ROOT) // Status in der Liste (wartet, neue Antwort) sofort nachziehen
     }
     private val refresher = object : Runnable {
         override fun run() { refreshSessions(); main.postDelayed(this, 20_000) }
@@ -110,12 +111,7 @@ class MediaService : MediaBrowserServiceCompat() {
         }
         if (info != null) items += item(INFO_ID, info, "Tippen zum Aktualisieren")
         sessions.forEach { s ->
-            val state = when {
-                Hub.isWaiting(s.id) -> "wartet auf Antwort"
-                s.busy -> "arbeitet"
-                else -> "bereit"
-            }
-            items += item(s.id, s.name, state)
+            items += item(s.id, s.name, Hub.stateLabel(s))
         }
         result.sendResult(items)
     }
@@ -138,7 +134,7 @@ class MediaService : MediaBrowserServiceCompat() {
                     order.retainAll(byId.keys)
                     st.sessions.map { it.id }.filter { it !in order }.reversed().forEach { order.add(0, it) }
                     val newList = order.mapNotNull { byId[it] }.take(MAX_SESSIONS)
-                    val changed = newList.map { Triple(it.id, it.name, it.busy) } != sessions.map { Triple(it.id, it.name, it.busy) } ||
+                    val changed = newList.map { Triple(it.id, it.name, Hub.stateLabel(it)) } != sessions.map { Triple(it.id, it.name, Hub.stateLabel(it)) } ||
                         macOnline != st.macOnline
                     sessions = newList; macOnline = st.macOnline
                     current = current?.let { c -> sessions.firstOrNull { it.id == c.id } ?: c }
@@ -192,7 +188,7 @@ class MediaService : MediaBrowserServiceCompat() {
             // Neueste Antwort vom Relay holen – auch auf Fragen, die nicht aus dem Auto kamen
             Hub.io.execute {
                 val last = runCatching { Hub.relay.waitReply(c.id, 0, wait = 0) }.getOrNull()
-                    ?.also { Hub.lastReply[c.id] = it } ?: Hub.lastReply[c.id]
+                    ?.also { Hub.markHeard(c.id, it) } ?: Hub.lastReply[c.id]
                 main.post {
                     Hub.speaker.speak(last?.let { "Antwort von ${c.name}. ${it.text}" } ?: "Noch keine Antwort von ${c.name}.")
                     updateState()

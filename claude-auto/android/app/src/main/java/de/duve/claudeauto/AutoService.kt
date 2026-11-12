@@ -75,11 +75,7 @@ class SessionListScreen(carContext: CarContext) : Screen(carContext) {
         } else {
             items.setNoItemsMessage("Keine laufenden Sitzungen.")
             st.sessions.take(MAX_ROWS).forEach { s ->
-                val state = when {
-                    Hub.isWaiting(s.id) -> "wartet auf Antwort"
-                    s.busy -> "arbeitet"
-                    else -> "bereit"
-                }
+                val state = Hub.stateLabel(s)
                 items.addItem(
                     Row.Builder().setTitle(s.name).addText(state)
                         .setOnClickListener { screenManager.push(ChatScreen(carContext, s)) }

@@ -184,7 +184,7 @@ class TalkActivity : Activity() {
         if (Hub.isWaiting(s.id) || state != State.IDLE) return
         Hub.io.execute {
             val r = runCatching { Hub.relay.waitReply(s.id, 0, wait = 0) }.getOrNull() ?: return@execute
-            runOnUiThread { if (current?.id == s.id && r.id > shownReplyId) { Hub.lastReply[s.id] = r; addClaude(r.text, id = r.id) } }
+            runOnUiThread { if (current?.id == s.id && r.id > shownReplyId) { Hub.markHeard(s.id, r); addClaude(r.text, id = r.id) } }
         }
     }
     override fun onPause() { main.removeCallbacks(ticker); super.onPause() }
@@ -226,7 +226,7 @@ class TalkActivity : Activity() {
         if (sessions.isEmpty()) return
         AlertDialog.Builder(this)
             .setTitle("Sitzung wählen")
-            .setItems(sessions.map { it.name }.toTypedArray()) { _, i -> select(sessions[i]) }
+            .setItems(sessions.map { if (Hub.hasNewReply(it)) "${it.name} · neue Antwort" else it.name }.toTypedArray()) { _, i -> select(sessions[i]) }
             .show()
     }
 
@@ -239,7 +239,7 @@ class TalkActivity : Activity() {
         // Letzte Antwort anzeigen, nicht vorlesen
         Hub.io.execute {
             val r = runCatching { Hub.relay.waitReply(s.id, 0, wait = 0) }.getOrNull() ?: return@execute
-            Hub.lastReply[s.id] = r
+            Hub.markHeard(s.id, r)
             runOnUiThread { if (current?.id == s.id && messages.childCount == 0) addClaude(r.text, id = r.id) }
         }
     }

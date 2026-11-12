@@ -48,6 +48,26 @@ object Hub {
     }
 
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
+
+    /** Antwort wurde vorgelesen oder angezeigt: merken, damit die Liste sie nicht mehr als neu zeigt. */
+    fun markHeard(sessionId: String, r: Reply) {
+        lastReply[sessionId] = r
+        if (r.id > prefs.heardReply(sessionId)) { prefs.setHeardReply(sessionId, r.id); changed() }
+    }
+
+    /** Neue Antwort, die Mouna noch nicht gehört hat. Eine Sitzung, die die App zum ersten Mal sieht, zählt als gehört. */
+    fun hasNewReply(s: ChatSession): Boolean {
+        val heard = prefs.heardReply(s.id)
+        if (heard < 0) { prefs.setHeardReply(s.id, s.lastReplyId); return false }
+        return s.lastReplyId > heard
+    }
+
+    fun stateLabel(s: ChatSession) = when {
+        isWaiting(s.id) -> "wartet auf Antwort"
+        hasNewReply(s) -> "neue Antwort"
+        s.busy -> "arbeitet"
+        else -> "bereit"
+    }
     fun anyWaiting() = waiting.isNotEmpty()
 
     /** Sitzung, deren Antwort gerade gekommen ist – der Auto-Player springt auf sie, damit Mouna dort direkt antworten kann. */
@@ -81,7 +101,7 @@ object Hub {
                         Thread.sleep(minOf(30_000L, 3_000L * ++errors)); null
                     } ?: continue
                     errors = 0
-                    lastReply[sessionId] = r
+                    markHeard(sessionId, r)
                     got = r
                     replyFocus = sessionId
                     main.post { speaker.speak(r.text, onSpoken) } // Mouna will direkt die Antwort hören, ohne Vorspann
