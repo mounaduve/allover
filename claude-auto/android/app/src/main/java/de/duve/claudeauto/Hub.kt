@@ -33,6 +33,13 @@ object Hub {
         stt = Stt(prefs, context)
         speaker = Speaker(context.applicationContext)
         started = true
+        // Abstürze festhalten und beim nächsten Start ins Protokoll schicken – sonst sehen wir nur „Dienst gestartet“
+        prefs.lastCrash.takeIf { it.isNotBlank() }?.let { log("Absturz beim letzten Mal: $it"); prefs.lastCrash = "" }
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching { prefs.saveCrash("${java.util.Date()} [${t.name}] ${android.util.Log.getStackTraceString(e).take(3000)}") }
+            previous?.uncaughtException(t, e)
+        }
     }
 
     private val logBuffer = java.util.concurrent.ConcurrentLinkedQueue<String>()

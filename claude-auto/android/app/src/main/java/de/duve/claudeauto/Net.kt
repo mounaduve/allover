@@ -25,6 +25,13 @@ class Prefs(context: Context) {
     fun heardReply(sessionId: String): Long = p.getLong("heard_$sessionId", -1)
     fun setHeardReply(sessionId: String, replyId: Long) = p.edit().putLong("heard_$sessionId", replyId).apply()
 
+    /** Stacktrace des letzten Absturzes, wird beim nächsten Start gemeldet. */
+    var lastCrash: String
+        get() = p.getString("last_crash", "")!!
+        set(v) = p.edit().putString("last_crash", v).apply()
+    /** Synchron schreiben – der Prozess endet direkt danach. */
+    fun saveCrash(v: String) { p.edit().putString("last_crash", v).commit() }
+
     var swapBytes: Boolean
         get() = p.getBoolean("swap_bytes", false)
         set(v) = p.edit().putBoolean("swap_bytes", v).apply()
