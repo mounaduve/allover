@@ -24,6 +24,9 @@ class Prefs(context: Context) {
     /** Höchste gehörte oder angezeigte Antwort je Sitzung, für „neue Antwort“ in der Liste. -1 = Sitzung noch nie gesehen. */
     fun heardReply(sessionId: String): Long = p.getLong("heard_$sessionId", -1)
     fun setHeardReply(sessionId: String, replyId: Long) = p.edit().putLong("heard_$sessionId", replyId).apply()
+    /** Mouna hat dieser Sitzung über die App geschrieben und die Antwort noch nicht gehört. */
+    fun askedViaApp(sessionId: String) = p.getBoolean("asked_$sessionId", false)
+    fun setAskedViaApp(sessionId: String, v: Boolean) = p.edit().putBoolean("asked_$sessionId", v).apply()
 
     /** Stacktrace des letzten Absturzes, wird beim nächsten Start gemeldet. */
     var lastCrash: String

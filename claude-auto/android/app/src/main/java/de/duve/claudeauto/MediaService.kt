@@ -169,7 +169,7 @@ class MediaService : MediaBrowserServiceCompat() {
             val prev = knownReply[s.id]
             knownReply[s.id] = maxOf(prev ?: 0, s.lastReplyId)
             if (!baselineDone || s.lastReplyId <= (prev ?: 0)) continue
-            if (!inCar || Hub.isWaiting(s.id) || (Hub.lastReply[s.id]?.id ?: 0) >= s.lastReplyId) continue
+            if (!inCar || !Hub.hasNewReply(s) || Hub.isWaiting(s.id)) continue
             if (phase == Phase.IDLE) current = s // Play liest dann genau diese Antwort
             Hub.log("Ansage „Neue Antwort von ${s.name}“ (Auto verbunden: $inCar)")
             Hub.speaker.speak("Neue Antwort von ${s.name}.")
@@ -317,7 +317,7 @@ class MediaService : MediaBrowserServiceCompat() {
                     runCatching { Hub.relay.status().sessions.firstOrNull { it.id == c.id }?.lastReplyId }.getOrNull() ?: c.lastReplyId,
                 )
                 Hub.relay.send(c.id, text)
-                Hub.lastSent[c.id] = text
+                Hub.markSent(c.id, text)
                 Hub.awaitReply(c.id, c.name, after)
                 done("Gesendet.")
             } catch (e: Exception) {

@@ -293,7 +293,7 @@ class TalkActivity : Activity() {
                 runCatching { Hub.relay.status().sessions.firstOrNull { it.id == s.id }?.lastReplyId }.getOrNull() ?: s.lastReplyId,
             )
             Hub.relay.send(s.id, text)
-            Hub.lastSent[s.id] = text
+            Hub.markSent(s.id, text)
             keepAlive()
             ui(t) { lastSentLabel?.text = "gesendet" }
             val ok = Hub.awaitReply(s.id, s.name, after,

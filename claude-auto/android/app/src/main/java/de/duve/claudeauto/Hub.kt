@@ -71,11 +71,21 @@ object Hub {
     /** Antwort wurde vorgelesen oder angezeigt: merken, damit die Liste sie nicht mehr als neu zeigt. */
     fun markHeard(sessionId: String, r: Reply) {
         lastReply[sessionId] = r
-        if (r.id > prefs.heardReply(sessionId)) { prefs.setHeardReply(sessionId, r.id); changed() }
+        if (r.id > prefs.heardReply(sessionId)) { prefs.setHeardReply(sessionId, r.id); prefs.setAskedViaApp(sessionId, false); changed() }
     }
 
-    /** Neue Antwort, die Mouna noch nicht gehört hat. Eine Sitzung, die die App zum ersten Mal sieht, zählt als gehört. */
+    /** Nachricht ging über die App raus – nur dann interessiert die Antwort hier (Ansage, „neue Antwort“). */
+    fun markSent(sessionId: String, text: String) {
+        lastSent[sessionId] = text
+        prefs.setAskedViaApp(sessionId, true)
+    }
+
+    /**
+     * Neue Antwort auf eine Nachricht aus der App, die Mouna noch nicht gehört hat. Antworten auf Arbeit direkt in der
+     * Claude-App zählen nicht – die hat sie dort schon gelesen (Mouna 12.11.).
+     */
     fun hasNewReply(s: ChatSession): Boolean {
+        if (!prefs.askedViaApp(s.id)) return false
         val heard = prefs.heardReply(s.id)
         if (heard < 0) { prefs.setHeardReply(s.id, s.lastReplyId); return false }
         return s.lastReplyId > heard
