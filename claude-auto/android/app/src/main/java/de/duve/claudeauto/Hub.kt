@@ -132,6 +132,7 @@ object Hub {
                     } ?: continue
                     errors = 0
                     if (gen != generation) break // inzwischen ausgestiegen
+                    log("Antwort von $name erhalten (${r.text.length} Zeichen), lese vor")
                     markHeard(sessionId, r)
                     got = r
                     replyFocus = sessionId
