@@ -95,7 +95,18 @@ class MediaService : MediaBrowserServiceCompat() {
     /** Läuft Android Auto gerade? Nur dann werden neue Antworten anderer Sitzungen angesagt. */
     @Volatile private var inCar = false
     private val carConnection by lazy { androidx.car.app.connection.CarConnection(this).type }
-    private val carObserver = androidx.lifecycle.Observer<Int> { inCar = it == androidx.car.app.connection.CarConnection.CONNECTION_TYPE_PROJECTION }
+    private val carObserver = androidx.lifecycle.Observer<Int> {
+        val now = it == androidx.car.app.connection.CarConnection.CONNECTION_TYPE_PROJECTION
+        val leftCar = inCar && !now
+        inCar = now
+        if (leftCar) {
+            // Ausgestiegen: sofort Ruhe – keine Aufnahme, kein Warten, kein Vorlesen, Dienst beenden
+            recorder?.stop(); phase = Phase.IDLE
+            Hub.stopAll()
+            stopForegroundIfIdle(force = true)
+            stopSelf()
+        }
+    }
 
     // ---------- Liste ----------
 

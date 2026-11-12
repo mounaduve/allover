@@ -56,6 +56,18 @@ object Hub {
 
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
 
+    /** Erhöht beim Aussteigen: laufende Warteschleifen hören auf und lesen nichts mehr vor. */
+    @Volatile private var generation = 0
+
+    /** Aus dem Auto ausgestiegen: nicht weiter auf Antworten warten, nichts mehr vorlesen. */
+    fun stopAll() {
+        generation++
+        waiting.clear()
+        main.post { speaker.stop() }
+        changed()
+        log("Ausgestiegen: Warten und Vorlesen beendet")
+    }
+
     /** Antwort wurde vorgelesen oder angezeigt: merken, damit die Liste sie nicht mehr als neu zeigt. */
     fun markHeard(sessionId: String, r: Reply) {
         lastReply[sessionId] = r
@@ -95,12 +107,13 @@ object Hub {
     ): Boolean {
         if (waiting.put(sessionId, true) == true) return false
         changed()
+        val gen = generation
         io.execute {
             val until = System.currentTimeMillis() + 20 * 60_000
             var errors = 0
             var got: Reply? = null
             try {
-                while (System.currentTimeMillis() < until) {
+                while (System.currentTimeMillis() < until && gen == generation) {
                     val r = try { relay.waitReply(sessionId, after) } catch (e: Exception) {
                         // Im Hintergrund drosselt Android das Netz – nicht aufgeben, sondern mit wachsendem Abstand
                         // weiter versuchen, bis die 20 Minuten um sind. Die Antwort liegt ja sicher auf dem Relay.
@@ -108,6 +121,7 @@ object Hub {
                         Thread.sleep(minOf(30_000L, 3_000L * ++errors)); null
                     } ?: continue
                     errors = 0
+                    if (gen != generation) break // inzwischen ausgestiegen
                     markHeard(sessionId, r)
                     got = r
                     replyFocus = sessionId
@@ -115,7 +129,7 @@ object Hub {
                     break
                 }
             } finally {
-                waiting.remove(sessionId)
+                if (gen == generation) waiting.remove(sessionId)
                 changed()
                 onReply?.let { cb -> main.post { cb(got) } }
             }
