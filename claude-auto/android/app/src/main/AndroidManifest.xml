@@ -29,15 +29,11 @@
             </intent-filter>
         </service>
 
+        <!-- Einstellungen: kein eigenes Symbol mehr, Aufruf oben rechts aus „Claude Gespräch“ (Mouna 16.11.) -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-        <!-- Gespräch am Handy: eigenes Symbol „Claude Gespräch“ auf dem Startbildschirm -->
+            android:exported="false" />
+        <!-- Gespräch am Handy: einziges Symbol „Claude Gespräch“ auf dem Startbildschirm -->
         <activity
             android:name=".TalkActivity"
             android:exported="true"
