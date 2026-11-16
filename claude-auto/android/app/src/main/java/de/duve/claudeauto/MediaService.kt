@@ -33,6 +33,8 @@ class MediaService : MediaBrowserServiceCompat() {
     private var sessions: List<ChatSession> = emptyList()
     private var macOnline = false
     private var current: ChatSession? = null
+    /** Sitzung, an die die laufende Aufnahme geht – fest ab Aufnahmestart, auch wenn Mouna inzwischen einen anderen Chat wählt */
+    private var target: ChatSession? = null
     private var phase = Phase.IDLE
     private var recognized = ""
     private var recorder: PhoneRecorder? = null
@@ -236,6 +238,13 @@ class MediaService : MediaBrowserServiceCompat() {
     }
 
     private fun select(s: ChatSession) {
+        if (phase != Phase.IDLE) {
+            // Aufnahme/Erkennen/Senden läuft noch: nicht abbrechen und nicht umleiten – die Nachricht geht an target
+            current = s
+            updateState()
+            if (phase != Phase.RECORDING) Hub.speaker.speak("${s.name}. Deine Nachricht geht noch an ${target?.name}.")
+            return
+        }
         current = s
         phase = Phase.IDLE
         Hub.speaker.stop()
@@ -246,6 +255,7 @@ class MediaService : MediaBrowserServiceCompat() {
     private fun startRecording() {
         val c = current ?: run { Hub.speaker.speak("Bitte zuerst eine Sitzung wählen."); return }
         if (phase == Phase.RECORDING) return
+        target = c
         Hub.speaker.stop()
         // Kurzer Ton statt Ansage (schneller); erst danach aufnehmen, damit der Ton nicht mit drauf ist
         beep()
@@ -303,7 +313,7 @@ class MediaService : MediaBrowserServiceCompat() {
     }
 
     private fun send() {
-        val c = current ?: return
+        val c = target ?: return
         if (phase != Phase.CONFIRM) return
         val text = recognized
         phase = Phase.SENDING
@@ -317,8 +327,9 @@ class MediaService : MediaBrowserServiceCompat() {
                 )
                 Hub.relay.send(c.id, text)
                 Hub.markSent(c.id, text)
+                Hub.log("Gesendet an ${c.name}")
                 Hub.awaitReply(c.id, c.name, after)
-                done("Gesendet.")
+                done(if (current?.id == c.id) "Gesendet." else "Gesendet an ${c.name}.")
             } catch (e: Exception) {
                 Hub.log("Senden fehlgeschlagen: $e")
                 main.post { phase = Phase.CONFIRM; updateState(); Hub.speaker.speak("Senden fehlgeschlagen. Tippe auf Senden für einen neuen Versuch.") }
@@ -345,7 +356,8 @@ class MediaService : MediaBrowserServiceCompat() {
     }
 
     private fun updateState() {
-        val c = current
+        // Solange eine Nachricht unterwegs ist, steht oben die Sitzung, an die sie wirklich geht
+        val c = if (phase != Phase.IDLE) target ?: current else current
         val last = c?.let { Hub.lastReply[it.id]?.text }
         val title = c?.name ?: "Claude"
         val line = when (phase) {
