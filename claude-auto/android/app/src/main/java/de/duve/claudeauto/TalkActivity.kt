@@ -283,7 +283,7 @@ class TalkActivity : Activity() {
         ui(t) { state = State.RECOGNIZING; updateUi() }
         val text = try { live.finish() } catch (e: Exception) {
             Hub.log("Spracherkennung fehlgeschlagen: ${e.message}")
-            ui(t) { pauseTalk("Spracherkennung fehlgeschlagen.") }; return
+            ui(t) { pauseTalk("Spracherkennung fehlgeschlagen, vermutlich keine Verbindung. Bitte nochmal sprechen.", say = true) }; return
         }
         if (text.isBlank()) { ui(t) { pauseTalk("Nichts verstanden – Gespräch pausiert.") }; return }
         ui(t) { addMine(text); state = State.WAITING; updateUi() }
@@ -292,14 +292,14 @@ class TalkActivity : Activity() {
                 Hub.lastReply[s.id]?.id ?: 0,
                 runCatching { Hub.relay.status().sessions.firstOrNull { it.id == s.id }?.lastReplyId }.getOrNull() ?: s.lastReplyId,
             )
-            Hub.relay.send(s.id, text)
+            Hub.sendWithRetry(s.id, text)
             Hub.markSent(s.id, text)
             keepAlive()
             ui(t) { lastSentLabel?.text = "gesendet" }
             val ok = Hub.awaitReply(s.id, s.name, after,
                 onReply = { r ->
                     if (t == turn) {
-                        if (r == null) pauseTalk("Keine Antwort gekommen.")
+                        if (r == null) pauseTalk("Keine Antwort gekommen.", say = true)
                         else { addClaude(r.text, reading = true, id = r.id); state = State.SPEAKING; updateUi() }
                     }
                 },
@@ -315,7 +315,7 @@ class TalkActivity : Activity() {
             if (!ok) ui(t) { pauseTalk("Diese Sitzung wartet schon auf eine Antwort.") }
         } catch (e: Exception) {
             Hub.log("Senden fehlgeschlagen: $e")
-            ui(t) { lastSentLabel?.text = "nicht gesendet"; pauseTalk("Senden fehlgeschlagen: ${e.message}") }
+            ui(t) { lastSentLabel?.text = "nicht gesendet"; pauseTalk("Keine Verbindung. Nachricht nicht gesendet, bitte nochmal sprechen.", say = true) }
         }
     }
 
@@ -326,11 +326,13 @@ class TalkActivity : Activity() {
     }
 
     /** Gespräch anhalten, ohne laufendes Vorlesen abzubrechen. */
-    private fun pauseTalk(msg: String) {
+    private fun pauseTalk(msg: String, say: Boolean = false) {
         state = State.IDLE
         note = msg
         tones.startTone(ToneGenerator.TONE_PROP_NACK, 200)
         updateUi()
+        // Fehler laut sagen – sonst merkt Mouna beim Fahren nicht, dass nichts angekommen ist
+        if (say) main.postDelayed({ Hub.speaker.speak(msg) }, 300)
     }
 
     private fun stopAll() {

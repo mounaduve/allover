@@ -308,7 +308,7 @@ class MediaService : MediaBrowserServiceCompat() {
             }
         } catch (e: Exception) {
             Hub.log("Spracherkennung fehlgeschlagen: ${e.message}")
-            done("Spracherkennung fehlgeschlagen.")
+            done("Spracherkennung fehlgeschlagen, vermutlich keine Verbindung. Bitte nochmal sprechen.")
         }
     }
 
@@ -325,14 +325,14 @@ class MediaService : MediaBrowserServiceCompat() {
                     Hub.lastReply[c.id]?.id ?: 0,
                     runCatching { Hub.relay.status().sessions.firstOrNull { it.id == c.id }?.lastReplyId }.getOrNull() ?: c.lastReplyId,
                 )
-                Hub.relay.send(c.id, text)
+                Hub.sendWithRetry(c.id, text)
                 Hub.markSent(c.id, text)
                 Hub.log("Gesendet an ${c.name}")
                 Hub.awaitReply(c.id, c.name, after)
                 done(if (current?.id == c.id) "Gesendet." else "Gesendet an ${c.name}.")
             } catch (e: Exception) {
                 Hub.log("Senden fehlgeschlagen: $e")
-                main.post { phase = Phase.CONFIRM; updateState(); Hub.speaker.speak("Senden fehlgeschlagen. Tippe auf Senden für einen neuen Versuch.") }
+                main.post { phase = Phase.CONFIRM; updateState(); Hub.speaker.speak("Keine Verbindung. Nachricht nicht gesendet. Tippe auf Senden für einen neuen Versuch.") }
             }
         }
     }

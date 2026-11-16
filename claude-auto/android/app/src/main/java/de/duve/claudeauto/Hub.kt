@@ -50,11 +50,25 @@ object Hub {
         logBuffer += "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.GERMANY).format(java.util.Date())} $msg"
         io.execute {
             val lines = generateSequence { logBuffer.poll() }.toList()
-            if (lines.isNotEmpty() && prefs.deviceToken.isNotBlank()) runCatching { relay.log(lines) }
+            // Bei Funkloch nicht wegwerfen, sondern beim nächsten Mal mitschicken (sonst fehlen genau die Fehlerzeilen)
+            if (lines.isNotEmpty() && prefs.deviceToken.isNotBlank() && runCatching { relay.log(lines) }.isFailure)
+                lines.takeLast(200).forEach { logBuffer.offer(it) }
         }
     }
 
     fun isWaiting(sessionId: String) = waiting[sessionId] == true
+
+    /** Senden mit drei Versuchen; wirft erst, wenn die Verbindung wirklich weg ist. */
+    fun sendWithRetry(sessionId: String, text: String) {
+        var last: Exception? = null
+        for (attempt in 1..3) {
+            try { relay.send(sessionId, text); return } catch (e: Exception) {
+                last = e; log("Senden Versuch $attempt fehlgeschlagen: $e")
+                if (attempt < 3) Thread.sleep(2_000)
+            }
+        }
+        throw last!!
+    }
 
     /** Erhöht beim Aussteigen: laufende Warteschleifen hören auf und lesen nichts mehr vor. */
     @Volatile private var generation = 0
@@ -121,6 +135,7 @@ object Hub {
         io.execute {
             val until = System.currentTimeMillis() + 20 * 60_000
             var errors = 0
+            var announced = false
             var got: Reply? = null
             try {
                 while (System.currentTimeMillis() < until && gen == generation) {
@@ -128,9 +143,16 @@ object Hub {
                         // Im Hintergrund drosselt Android das Netz – nicht aufgeben, sondern mit wachsendem Abstand
                         // weiter versuchen, bis die 20 Minuten um sind. Die Antwort liegt ja sicher auf dem Relay.
                         log("Antwort abholen fehlgeschlagen: $e")
-                        Thread.sleep(minOf(30_000L, 3_000L * ++errors)); null
-                    } ?: continue
+                        if (++errors == 3 && !announced) {
+                            announced = true
+                            main.post { speaker.speak("Verbindung unterbrochen. Deine Nachricht ist angekommen, ich warte weiter auf die Antwort von $name.") }
+                        }
+                        Thread.sleep(minOf(30_000L, 3_000L * errors))
+                        continue
+                    }
                     errors = 0
+                    if (announced) { announced = false; log("Verbindung wieder da"); if (r == null) main.post { speaker.speak("Verbindung wieder da.") } }
+                    if (r == null) continue
                     if (gen != generation) break // inzwischen ausgestiegen
                     log("Antwort von $name erhalten (${r.text.length} Zeichen), lese vor")
                     lastReply[sessionId] = r
